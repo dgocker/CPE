@@ -8,7 +8,7 @@ DOWNLOAD_DIR="./temp_deploy"
 DEPLOY_FOLDER="./ready_to_push"
 
 echo "--- Начинаем деплой для dgocker/CPE ---"
-
+ls -la
 # 1. Пуш в репозиторий
 if [[ -n $(git status -s) ]]; then
     echo "Фиксируем изменения..."
