@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Settings, Globe, Signal, SignalHigh, SignalMedium, SignalLow, SignalZero, 
   Power, RefreshCw, Activity, Search, CheckCircle2, Loader2, 
@@ -158,6 +158,7 @@ export default function App() {
   
   // Network Scan State
   const [scanStatus, setScanStatus] = useState<'idle' | 'scanning' | 'done' | 'error'>('idle');
+  const isScanningRef = useRef(false);
   const [operators, setOperators] = useState<any[]>([]);
   const [connectingTo, setConnectingTo] = useState<string | null>(null);
   const [connectionResults, setConnectionResults] = useState<Record<string, 'success' | 'error' | 'connecting'>>({});
@@ -169,7 +170,7 @@ export default function App() {
 
   const fetchData = useCallback(async () => {
     if (!localStorage.getItem('sessionId') && !isDev) return;
-    if (scanStatus === 'scanning') return;
+    if (isScanningRef.current) return;
     
     // 1. Fetch Fields
     try {
@@ -321,11 +322,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (scanStatus === 'scanning') return;
+    if (isScanningRef.current) return;
     fetchData();
-    const interval = setInterval(fetchData, 2000);
+    const interval = setInterval(() => {
+      if (!isScanningRef.current) fetchData();
+    }, 2000);
     return () => clearInterval(interval);
-  }, [fetchData, scanStatus]);
+  }, [fetchData]);
 
   // --- Network Scan Logic ---
   useEffect(() => {
@@ -346,9 +349,11 @@ export default function App() {
         errorCount = 0; // Reset on success
         
         if (json.status === 'done') {
+          isScanningRef.current = false;
           setScanStatus('done');
           parseOperators(json.data || '');
         } else if (json.status === 'error') {
+          isScanningRef.current = false;
           setScanStatus('error');
           showToast('Ошибка модема при поиске', 'error');
         }
@@ -408,6 +413,7 @@ export default function App() {
   };
 
   const startScan = async () => {
+    isScanningRef.current = true;
     setScanStatus('scanning');
     setOperators([]);
     
@@ -415,6 +421,7 @@ export default function App() {
       // В режиме разработки имитируем работу scan.cgi
       setData((prev: any) => ({ ...prev, internetState: 'disconnected' }));
       setTimeout(() => {
+        isScanningRef.current = false;
         setScanStatus('done');
         parseOperators('(+COPS: (2,"MTS","MTS","25001",7),(1,"Beeline","Beeline","25099",7),(3,"MegaFon","MegaFon","25002",7))');
         showToast('Поиск завершен (MOCK)');
@@ -438,8 +445,25 @@ export default function App() {
         throw new Error('Failed to start scan.cgi');
       }
     } catch (err) {
+      isScanningRef.current = false;
       setScanStatus('error');
       showToast('Не удалось запустить поиск', 'error');
+    }
+  };
+
+  const stopScan = async () => {
+    try {
+      const sessionId = localStorage.getItem('sessionId');
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (sessionId) headers['Authorization'] = sessionId;
+      await fetch('/cgi-bin/scan.cgi?action=stop', { headers });
+      isScanningRef.current = false;
+      setScanStatus('idle');
+      showToast('Поиск прерван');
+    } catch (e) {
+      console.error('Failed to stop scan', e);
+      isScanningRef.current = false;
+      setScanStatus('idle');
     }
   };
 
@@ -713,10 +737,10 @@ export default function App() {
                   <p className="text-zinc-300 font-medium">Поиск сетей...</p>
                   <p className="text-zinc-500 text-xs mt-2">Это может занять до 3 минут.</p>
                   <button 
-                    onClick={() => setScanStatus('idle')}
+                    onClick={stopScan}
                     className="mt-6 text-xs text-zinc-500 hover:text-zinc-300 underline underline-offset-4"
                   >
-                    Остановить ожидание
+                    Прервать поиск
                   </button>
                 </div>
               ) : (
