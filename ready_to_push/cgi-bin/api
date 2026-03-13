@@ -1,0 +1,109 @@
+#!/system/bin/sh
+
+# Заголовки
+echo "Content-Type: application/json"
+echo "Access-Control-Allow-Origin: *"
+echo ""
+
+# 1. Читаем POST данные
+if [ "$CONTENT_LENGTH" -gt 0 ]; then
+    DATA=$(busybox dd bs=1 count=$CONTENT_LENGTH 2>/dev/null)
+else
+    read -r DATA
+fi
+
+# Извлекаем параметры
+ACTION=$(echo "$DATA" | busybox sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+AT_CMD_B64=$(echo "$DATA" | busybox sed -n 's/.*"at_cmd_b64"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+# Для обратной совместимости
+AT_CMD_OLD=$(echo "$DATA" | busybox sed -n 's/.*"at_cmd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+
+PORT="/dev/smd11"
+LOG_FILE="/data/local/tmp/terminal_output.log"
+
+# Декодируем base64, если есть
+if [ -n "$AT_CMD_B64" ]; then
+    AT_CMD=$(echo -n "$AT_CMD_B64" | busybox base64 -d 2>/dev/null)
+else
+    AT_CMD="$AT_CMD_OLD"
+fi
+
+kill_smd_users() {
+    for f in /proc/[0-9]*/fd/*; do
+        [ -e "$f" ] || continue
+        target=$(busybox readlink "$f" 2>/dev/null)
+        case "$target" in */dev/smd11*)
+            pid="${f#/proc/}"; pid="${pid%%/*}"
+            [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null
+        esac
+    done
+    busybox ps | busybox grep "cat $PORT" | busybox grep -v grep | while read -r line; do
+        set -- $line
+        [ "$2" != "$$" ] && kill -9 "$2" 2>/dev/null
+    done
+    busybox usleep 300000
+}
+
+# 2. ДЕЙСТВИЕ: KILL AT
+if [ "$ACTION" = "kill_at" ]; then
+    kill_smd_users
+    echo '{"reply":"ok","message":"Порт очищен"}'
+    exit 0
+fi
+
+# 3. ДЕЙСТВИЕ: AT КОМАНДА
+if [ -n "$AT_CMD" ]; then
+    kill_smd_users
+    > "$LOG_FILE"
+    busybox stty -F "$PORT" 115200 raw -echo 2>/dev/null
+
+    if exec 3<>"$PORT" 2>/dev/null; then
+        cat <&3 >> "$LOG_FILE" 2>/dev/null &
+        CAT_PID=$!
+        busybox usleep 200000
+
+        echo -e "${AT_CMD}\r" >&3
+
+        MAX_WAIT=5
+        echo "$AT_CMD" | grep -q "sasd=1" && MAX_WAIT=90
+
+        C=0; while [ $C -lt "$MAX_WAIT" ]; do
+            busybox tail -n 5 "$LOG_FILE" 2>/dev/null | grep -qE "OK|ERROR|\+CME ERROR" && break
+            sleep 1
+            C=$((C + 1))
+        done
+
+        kill -9 "$CAT_PID" 2>/dev/null
+        exec 3>&-
+
+        RESULT=$(cat "$LOG_FILE" | busybox tr -d '\r')
+        [ -z "$RESULT" ] && RESULT="[No response from modem]"
+        RESULT_BASE64=$(echo -n "$RESULT" | busybox base64 2>/dev/null | busybox tr -d '\n')
+        [ -z "$RESULT_BASE64" ] && RESULT_BASE64=""
+
+        echo "{\"reply\":\"ok\",\"response_base64\":\"$RESULT_BASE64\"}"
+        exit 0
+    else
+        echo '{"reply":"error","message":"Port busy"}'
+        exit 1
+    fi
+fi
+
+# 4. ПРОКСИ К КИТАЙСКОМУ СЕРВЕРУ (Логин и статус)
+LEN=$(echo -n "$DATA" | busybox wc -c)
+{
+    echo "POST /api/json HTTP/1.1"
+    echo "Host: 127.0.0.1:8000"
+    echo "Content-Type: application/json"
+    if [ -n "$HTTP_AUTHORIZATION" ]; then
+        echo "Authorization: $HTTP_AUTHORIZATION"
+    fi
+    echo "Content-Length: $LEN"
+    echo "Connection: close"
+    echo ""
+    echo -n "$DATA"
+} | busybox nc 127.0.0.1 8000 > /data/local/tmp/api_proxy.txt 2>/dev/null
+
+RESULT_JSON=$(busybox sed '1,/^$/d' /data/local/tmp/api_proxy.txt 2>/dev/null)
+[ -z "$RESULT_JSON" ] && RESULT_JSON=$(busybox tail -n 1 /data/local/tmp/api_proxy.txt 2>/dev/null)
+echo "$RESULT_JSON"
