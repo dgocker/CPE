@@ -865,50 +865,6 @@ export default function App() {
             <motion.div key="terminal" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="mt-6">
               <h2 className="text-2xl font-semibold mb-6">Инженерный терминал</h2>
               
-              {/* Band Management */}
-              <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6 mb-6">
-                <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Signal className="w-4 h-4 text-emerald-400"/> Управление диапазонами (Bands)</h3>
-                <div className="flex flex-wrap gap-4 mb-6">
-                  {['0x1|B1 (2100)', '0x4|B3 (1800)', '0x40|B7 (2600)', '0x80000|B20 (800)'].map(b => {
-                    const [val, label] = b.split('|');
-                    return (
-                      <label key={val} className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer">
-                        <input type="checkbox" value={val} className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" id={`band-${val}`} />
-                        {label}
-                      </label>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <button onClick={async () => {
-                    let mask = 0;
-                    document.querySelectorAll('input[id^="band-"]:checked').forEach((el: any) => { mask |= parseInt(el.value, 16); });
-                    if (mask === 0) { showToast('Выберите хотя бы один диапазон', 'error'); return; }
-                    const hexMask = mask.toString(16).toUpperCase();
-                    const cmd = `AT+QCFG="band",0,${hexMask},1`;
-                    const out = document.getElementById('at-out');
-                    if (out) out.innerText += `\n>>> ${cmd}`;
-                    try {
-                      const res = await execAtCmd(cmd);
-                      if (out) { out.innerText += `\n${res}`; out.scrollTop = out.scrollHeight; }
-                    } catch (e: any) {
-                      if (out) { out.innerText += `\n[Ошибка]: ${e.message}`; out.scrollTop = out.scrollHeight; }
-                    }
-                  }} className="flex-1 min-w-[140px] bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-lg shadow-emerald-500/20">Применить</button>
-                  <button onClick={async () => {
-                    const cmd = 'AT+QCFG="band"';
-                    const out = document.getElementById('at-out');
-                    if (out) out.innerText += `\n>>> ${cmd}`;
-                    try {
-                      const res = await execAtCmd(cmd);
-                      if (out) { out.innerText += `\n${res}`; out.scrollTop = out.scrollHeight; }
-                    } catch (e: any) {
-                      if (out) { out.innerText += `\n[Ошибка]: ${e.message}`; out.scrollTop = out.scrollHeight; }
-                    }
-                  }} className="flex-1 min-w-[140px] bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors">Текущие конфиги</button>
-                </div>
-              </div>
-
               {/* AT Terminal */}
               <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6">
                 <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Terminal className="w-4 h-4 text-emerald-400"/> AT-Команды</h3>
@@ -1427,7 +1383,44 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
             <FormGroup>
               <SelectRow label="Режим сети" value={formData.netWorkMode?.toString()} onChange={(v) => handleChange('netWorkMode', v)} options={[{l:'Авто (3G/4G)', v:'12'}, {l:'Только 4G LTE', v:'11'}, {l:'Только 3G', v:'2'}]} />
               <InputRow label="Значение TTL" value={formData.TTL} onChange={(v) => handleChange('TTL', v)} type="number" />
-              <InputRow label="Диапазоны частот" value={formData.FreqBand || ''} onChange={(v) => handleChange('FreqBand', v)} placeholder="Например: B1,B3,B7 или cn_all" />
+              <div className="px-4 py-3 bg-black/20 rounded-2xl border border-white/5">
+                <label className="block text-sm font-medium text-zinc-400 mb-3">Диапазоны частот (Bands)</label>
+                <div className="flex flex-wrap gap-2">
+                  {['B1', 'B3', 'B7', 'B8', 'B20', 'B38', 'B40'].map(band => {
+                    const isSelected = formData.FreqBand && formData.FreqBand !== 'cn_all' ? formData.FreqBand.split(',').includes(band) : false;
+                    return (
+                      <label key={band} className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer bg-black/40 px-3 py-2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected}
+                          onChange={(e) => {
+                            let currentBands = formData.FreqBand && formData.FreqBand !== 'cn_all' ? formData.FreqBand.split(',').filter(Boolean) : [];
+                            if (e.target.checked) {
+                              if (!currentBands.includes(band)) currentBands.push(band);
+                            } else {
+                              currentBands = currentBands.filter((b: string) => b !== band);
+                            }
+                            handleChange('FreqBand', currentBands.length > 0 ? currentBands.join(',') : 'cn_all');
+                          }}
+                          className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" 
+                        />
+                        {band}
+                      </label>
+                    );
+                  })}
+                  <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer bg-black/40 px-3 py-2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
+                    <input 
+                      type="checkbox" 
+                      checked={!formData.FreqBand || formData.FreqBand === 'cn_all'}
+                      onChange={(e) => {
+                        if (e.target.checked) handleChange('FreqBand', 'cn_all');
+                      }}
+                      className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" 
+                    />
+                    Авто (Все)
+                  </label>
+                </div>
+              </div>
             </FormGroup>
 
             <div className="mt-4 mb-4 flex items-center justify-between px-4">
