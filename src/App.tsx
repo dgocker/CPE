@@ -193,22 +193,25 @@ export default function App() {
     // 2. Fetch APN
     try {
       const apnRes = await apiCall({ fid: 'queryApn', fields: {} });
-      if (apnRes && apnRes.apnConfigs) {
+      console.log('APN Response:', apnRes);
+      if (apnRes) {
+         const f = apnRes.fields || apnRes;
+         const configs = f.apnConfigs || f.apn_configs || f.apnList || f.apn_list || (Array.isArray(f) ? f : []);
          setData((prev: any) => ({ 
            ...prev, 
-           apnConfigs: apnRes.apnConfigs, 
-           currentConfig: apnRes.currentConfig, 
-           apnMode: apnRes.apnMode 
+           apnConfigs: Array.isArray(configs) ? configs : [], 
+           currentConfig: f.currentConfig ?? f.current_config, 
+           apnMode: f.apnMode ?? f.apn_mode 
          }));
       }
     } catch (e) {
       console.warn('queryApn failed', e);
       if (isDev) {
         setData((prev: any) => ({ 
-          ...prev, 
-          apnConfigs: MOCK_DATA.apnConfigs, 
-          currentConfig: MOCK_DATA.currentConfig,
-          apnMode: MOCK_DATA.apnMode
+           ...prev, 
+           apnConfigs: MOCK_DATA.apnConfigs, 
+           currentConfig: MOCK_DATA.currentConfig,
+           apnMode: MOCK_DATA.apnMode
         }));
       }
     }
@@ -974,6 +977,7 @@ export default function App() {
                     onSave={handleSaveSettings}
                     onSystemAction={handleSystemAction}
                     showToast={showToast}
+                    fetchData={fetchData}
                   />
                 )}
               </AnimatePresence>
@@ -1022,7 +1026,7 @@ function SettingsMenuItem({ icon, label, onClick }: { icon: React.ReactNode, lab
 
 // --- Settings Sub-Pages ---
 
-function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast }: { key?: string, page: string, data: any, onBack: () => void, onSave: (fid: string, fields: any, timeoutMs?: number) => void, onSystemAction: (fid: string, fields?: any) => void, showToast: (msg: string, type?: 'success'|'error') => void }) {
+function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast, fetchData }: { key?: string, page: string, data: any, onBack: () => void, onSave: (fid: string, fields: any, timeoutMs?: number) => void, onSystemAction: (fid: string, fields?: any) => void, showToast: (msg: string, type?: 'success'|'error') => void, fetchData: () => void }) {
   const [formData, setFormData] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
   const [editingApn, setEditingApn] = useState<any>(null); // null = list, {} = new, {...} = edit
@@ -1140,19 +1144,53 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
     }
   };
 
+  const handleEditApn = async (apn: any) => {
+    try {
+      const res = await apiCall({ fid: 'queryApn', fields: { selectId: apn.id } });
+      const details = res.fields || res;
+      setEditingApn({ ...apn, ...details });
+    } catch (e) {
+      setEditingApn(apn);
+    }
+  };
+
   const handleSaveApn = async () => {
     setIsSaving(true);
-    await onSystemAction('setApn', {
-      id: editingApn.id, // undefined if new
-      configName: editingApn.name || 'New APN',
-      pdpType: editingApn.pdpType || 'IPv4',
-      apn: editingApn.apn || '',
-      authtype: parseInt(editingApn.authtype || '0'),
-      apnUser: editingApn.apnUser || '',
-      apnPassword: editingApn.apnPassword || ''
-    });
-    setEditingApn(null);
-    setIsSaving(false);
+    try {
+      const fields: any = {
+        id: (editingApn.id !== undefined && editingApn.id !== null) ? Number(editingApn.id) : -1,
+        configName: editingApn.name || editingApn.configName || 'New APN',
+        apn: editingApn.apn || '',
+        apnUser: editingApn.apnUser || '',
+        apnPassword: editingApn.apnPassword || '',
+        apnProxy: editingApn.apnProxy || '',
+        apnPort: editingApn.apnPort || '',
+        pdpType: editingApn.pdpType || 'IPv4',
+        authtype: parseInt(editingApn.authtype?.toString() || '0'),
+      };
+
+      await onSystemAction('setApn', fields);
+      setEditingApn(null);
+      showToast('Профиль APN сохранен');
+      setTimeout(fetchData, 2000);
+    } catch (e: any) {
+      showToast(e.message || 'Ошибка при сохранении APN', 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSetDefaultApn = async (id: number) => {
+    setIsSaving(true);
+    try {
+      await onSystemAction('setDefaultApn', { id });
+      showToast('Профиль APN установлен по умолчанию');
+      setTimeout(fetchData, 2000);
+    } catch (e: any) {
+      showToast(e.message || 'Ошибка при смене APN', 'error');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleChangePassword = async () => {
@@ -1283,7 +1321,16 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
             </FormGroup>
 
             <div className="mt-4 mb-4 flex items-center justify-between px-4">
-              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Профили APN</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Профили APN</h3>
+                <button 
+                  onClick={() => fetchData()}
+                  className="p-1.5 text-zinc-500 hover:text-emerald-400 transition-colors"
+                  title="Обновить список"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
               <button 
                 onClick={() => setEditingApn({})} 
                 className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors bg-emerald-500/10 px-3 py-1.5 rounded-full"
@@ -1293,8 +1340,20 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
             </div>
 
             <div className="space-y-3">
+              {(!formData.apnConfigs || formData.apnConfigs.length === 0) && (
+                <div className="p-8 text-center border-2 border-dashed border-white/5 rounded-3xl">
+                  <div className="text-zinc-500 text-xs font-medium">Список профилей пуст</div>
+                  <button 
+                    onClick={() => fetchData()}
+                    className="mt-2 text-[10px] text-emerald-400 font-bold hover:underline"
+                  >
+                    ОБНОВИТЬ
+                  </button>
+                </div>
+              )}
               {formData.apnConfigs?.map((apn: any) => {
-                const isActive = formData.currentConfig == apn.id;
+                // currentConfig может быть как ID, так и именем
+                const isActive = formData.currentConfig == apn.id || formData.currentConfig === apn.name || formData.currentConfig === apn.configName;
                 return (
                   <div 
                     key={apn.id} 
@@ -1307,9 +1366,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                     <div className="p-4 flex items-center justify-between relative z-10">
                       <div className="flex items-center gap-4">
                         <button 
-                          onClick={() => {
-                            onSystemAction('setDefaultApn', { selectId: apn.id });
-                          }}
+                          onClick={() => !isActive && handleSetDefaultApn(apn.id)}
                           className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
                             isActive 
                               ? 'border-emerald-500 bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]' 
@@ -1321,7 +1378,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                         <div>
                           <div className="flex items-center gap-2">
                             <span className={`text-sm font-bold ${isActive ? 'text-emerald-400' : 'text-zinc-200'}`}>
-                              {apn.name}
+                              {apn.name || apn.configName || 'Без названия'}
                             </span>
                             {isActive && (
                               <span className="text-[8px] font-black bg-emerald-500 text-white px-1.5 py-0.5 rounded-sm uppercase tracking-tighter">
@@ -1330,16 +1387,16 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                             )}
                           </div>
                           <div className="text-[10px] text-zinc-500 font-mono mt-0.5 flex items-center gap-2">
-                            <span>{apn.apn}</span>
-                            <span className="w-1 h-1 rounded-full bg-zinc-700" />
-                            <span>{apn.pdpType || 'IPv4'}</span>
+                            {apn.apn && <span>{apn.apn}</span>}
+                            {apn.apn && apn.pdpType && <span className="w-1 h-1 rounded-full bg-zinc-800" />}
+                            {apn.pdpType && <span>{apn.pdpType}</span>}
                           </div>
                         </div>
                       </div>
                       
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button 
-                          onClick={() => setEditingApn(apn)} 
+                          onClick={() => handleEditApn(apn)} 
                           className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors"
                         >
                           <Edit2 className="w-4 h-4" />
@@ -1350,7 +1407,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                               showToast('Нельзя удалить активный профиль', 'error');
                               return;
                             }
-                            if (window.confirm(`Удалить профиль "${apn.name}"?`)) {
+                            if (window.confirm(`Удалить профиль "${apn.name || apn.configName || 'Без названия'}"?`)) {
                               onSystemAction('deleteApn', { selectId: apn.id });
                             }
                           }} 
@@ -1376,9 +1433,13 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
 
         {page === 'mobile' && editingApn && (
           <FormGroup>
-            <InputRow label="Имя профиля" value={editingApn.name} onChange={(v) => setEditingApn({...editingApn, name: v})} />
-            <SelectRow label="Тип PDP" value={editingApn.pdpType || 'IPv4'} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPv4'}, {l:'IPv6', v:'IPv6'}, {l:'IPv4v6', v:'IPv4V6'}]} />
+            <InputRow label="Имя профиля" value={editingApn.name || editingApn.configName} onChange={(v) => setEditingApn({...editingApn, name: v, configName: v})} />
+            <SelectRow label="Тип PDP" value={editingApn.pdpType || 'IPv4'} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPv4'}, {l:'IPv6', v:'IPv6'}, {l:'IPv4v6', v:'IPv4V6'}, {l:'IP', v:'IP'}]} />
             <InputRow label="APN" value={editingApn.apn} onChange={(v) => setEditingApn({...editingApn, apn: v})} />
+            <div className="flex divide-x divide-white/5">
+              <InputRow label="MCC" value={editingApn.mcc || ''} onChange={(v) => setEditingApn({...editingApn, mcc: v})} placeholder="250" />
+              <InputRow label="MNC" value={editingApn.mnc || ''} onChange={(v) => setEditingApn({...editingApn, mnc: v})} placeholder="01" />
+            </div>
             <InputRow label="Имя пользователя" value={editingApn.apnUser} onChange={(v) => setEditingApn({...editingApn, apnUser: v})} />
             <InputRow label="Пароль" value={editingApn.apnPassword} onChange={(v) => setEditingApn({...editingApn, apnPassword: v})} type="password" />
             <SelectRow label="Тип аутентификации" value={editingApn.authtype?.toString() || '0'} onChange={(v) => setEditingApn({...editingApn, authtype: v})} options={[{l:'Нет', v:'0'}, {l:'PAP', v:'1'}, {l:'CHAP', v:'2'}, {l:'PAP/CHAP', v:'3'}]} />
