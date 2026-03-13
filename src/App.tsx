@@ -472,7 +472,8 @@ export default function App() {
 
   const connectToOperator = async (numeric: string) => {
     setConnectingTo(numeric);
-    setConnectionResults(prev => ({ ...prev, [numeric]: 'connecting' }));
+    // Сбрасываем предыдущие результаты, чтобы только текущая попытка была активна
+    setConnectionResults({ [numeric]: 'connecting' });
     
     try {
       // Отправка команды подключения
