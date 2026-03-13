@@ -1018,12 +1018,29 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
   const [formData, setFormData] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
   const [editingApn, setEditingApn] = useState<any>(null); // null = list, {} = new, {...} = edit
+  const touchedFields = useRef<Set<string>>(new Set());
 
+  // Синхронизируем данные извне, но НЕ перезаписываем те, что юзер уже трогал
   useEffect(() => {
+    setFormData((prev: any) => {
+      const newData = { ...prev };
+      Object.keys(data).forEach(key => {
+        if (!touchedFields.current.has(key)) {
+          newData[key] = data[key];
+        }
+      });
+      return newData;
+    });
+  }, [data]);
+
+  // При смене страницы сбрасываем "тронутые" поля
+  useEffect(() => {
+    touchedFields.current.clear();
     setFormData({ ...data });
-  }, [data, page]);
+  }, [page]);
 
   const handleChange = (key: string, value: any) => {
+    touchedFields.current.add(key);
     setFormData((prev: any) => ({ ...prev, [key]: value }));
   };
 
@@ -1105,8 +1122,14 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
       }
     }
 
-    await onSave(fid, fieldsToSave, timeoutMs);
-    setIsSaving(false);
+    try {
+      await onSave(fid, fieldsToSave, timeoutMs);
+      touchedFields.current.clear(); // Сбрасываем после успешного сохранения
+    } catch (e) {
+      console.warn('Save failed', e);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleSaveApn = async () => {
@@ -1251,38 +1274,111 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               <InputRow label="Значение TTL" value={formData.ttl} onChange={(v) => handleChange('ttl', v)} type="number" />
             </FormGroup>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Профили APN</h3>
+            <div className="mt-8 mb-4 flex items-center justify-between px-4">
+              <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Профили APN</h3>
+              <button 
+                onClick={() => setEditingApn({})} 
+                className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 hover:text-emerald-300 transition-colors bg-emerald-500/10 px-3 py-1.5 rounded-full"
+              >
+                <Plus className="w-3.5 h-3.5" /> ДОБАВИТЬ
+              </button>
+            </div>
+
             <FormGroup>
-              <SelectRow label="Режим APN" value={formData.apnMode} onChange={(v) => handleChange('apnMode', v)} options={[{l:'Авто', v:'auto'}, {l:'Вручную', v:'manual'}]} />
+              <SelectRow 
+                label="Режим APN" 
+                value={formData.apnMode} 
+                onChange={(v) => {
+                  handleChange('apnMode', v);
+                  onSave('setFields', { apnMode: v });
+                }} 
+                options={[{l:'Автоматический', v:'auto'}, {l:'Ручной', v:'manual'}]} 
+              />
             </FormGroup>
 
-            {formData.apnMode === 'manual' && (
-              <div className="mt-4 space-y-3">
-                {formData.apnConfigs?.map((apn: any) => (
-                  <div key={apn.id} className="bg-zinc-900/50 border border-white/5 rounded-2xl p-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <button 
-                        onClick={() => onSystemAction('setDefaultApn', { selectId: apn.id })}
-                        className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${formData.currentConfig == apn.id ? 'border-emerald-500' : 'border-zinc-600'}`}
-                      >
-                        {formData.currentConfig == apn.id && <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full" />}
-                      </button>
-                      <div>
-                        <div className="text-sm font-medium text-zinc-200">{apn.name}</div>
-                        <div className="text-xs text-zinc-500 font-mono mt-0.5">{apn.apn}</div>
+            <div className="mt-4 space-y-3">
+              {formData.apnConfigs?.map((apn: any) => {
+                const isActive = formData.currentConfig == apn.id;
+                return (
+                  <div 
+                    key={apn.id} 
+                    className={`group relative overflow-hidden rounded-3xl border transition-all duration-300 ${
+                      isActive 
+                        ? 'bg-emerald-500/10 border-emerald-500/30' 
+                        : 'bg-zinc-900/40 border-white/5 hover:border-white/10'
+                    }`}
+                  >
+                    <div className="p-4 flex items-center justify-between relative z-10">
+                      <div className="flex items-center gap-4">
+                        <button 
+                          onClick={() => {
+                            if (formData.apnMode === 'auto') {
+                              showToast('Переключите режим APN в "Ручной", чтобы выбирать профиль', 'error');
+                              return;
+                            }
+                            onSystemAction('setDefaultApn', { selectId: apn.id });
+                          }}
+                          className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
+                            isActive 
+                              ? 'border-emerald-500 bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]' 
+                              : 'border-zinc-700 hover:border-zinc-500'
+                          }`}
+                        >
+                          {isActive && <CheckCircle2 className="w-4 h-4 text-white" />}
+                        </button>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-sm font-bold ${isActive ? 'text-emerald-400' : 'text-zinc-200'}`}>
+                              {apn.name}
+                            </span>
+                            {isActive && (
+                              <span className="text-[8px] font-black bg-emerald-500 text-white px-1.5 py-0.5 rounded-sm uppercase tracking-tighter">
+                                Active
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-zinc-500 font-mono mt-0.5 flex items-center gap-2">
+                            <span>{apn.apn}</span>
+                            <span className="w-1 h-1 rounded-full bg-zinc-700" />
+                            <span>{apn.pdpType || 'IPv4'}</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => setEditingApn(apn)} 
+                          className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (isActive) {
+                              showToast('Нельзя удалить активный профиль', 'error');
+                              return;
+                            }
+                            if (window.confirm(`Удалить профиль "${apn.name}"?`)) {
+                              onSystemAction('deleteApn', { selectId: apn.id });
+                            }
+                          }} 
+                          className="p-2 text-red-400/60 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
+                        >
+                          <Trash className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => setEditingApn(apn)} className="p-2 text-zinc-400 hover:text-white bg-white/5 rounded-full"><Edit2 className="w-4 h-4" /></button>
-                      <button onClick={() => onSystemAction('deleteApn', { selectId: apn.id })} className="p-2 text-red-400 hover:text-red-300 bg-red-500/10 rounded-full"><Trash className="w-4 h-4" /></button>
-                    </div>
                   </div>
-                ))}
-                <button onClick={() => setEditingApn({})} className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center justify-center gap-2 text-zinc-300 hover:bg-white/10 transition-colors border-dashed">
-                  <Plus className="w-4 h-4" /> Добавить новый APN
-                </button>
-              </div>
-            )}
+                );
+              })}
+              
+              {(!formData.apnConfigs || formData.apnConfigs.length === 0) && (
+                <div className="text-center py-10 bg-zinc-900/20 border border-dashed border-white/5 rounded-3xl">
+                  <Globe className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                  <p className="text-xs text-zinc-500">Список профилей пуст</p>
+                </div>
+              )}
+            </div>
           </>
         )}
 
