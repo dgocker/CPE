@@ -301,42 +301,6 @@ export default function App() {
     setIsLoggingIn(false);
   };
 
-  if (!sessionId && !isDev) {
-    return (
-      <div className="min-h-screen bg-[#0A0A0C] text-white flex items-center justify-center p-6 font-sans">
-        <div className="w-full max-w-sm bg-zinc-900/50 border border-white/5 rounded-3xl p-8 shadow-2xl">
-          <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 bg-emerald-500/20 rounded-2xl flex items-center justify-center">
-              <Lock className="w-8 h-8 text-emerald-400" />
-            </div>
-          </div>
-          <h1 className="text-2xl font-semibold text-center mb-2">CPE Роутер</h1>
-          <p className="text-zinc-500 text-sm text-center mb-8">Введите пароль администратора</p>
-          
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="Пароль"
-                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 transition-colors"
-              />
-            </div>
-            {loginError && <p className="text-red-400 text-xs text-center">{loginError}</p>}
-            <button
-              type="submit"
-              disabled={isLoggingIn || !loginPassword}
-              className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50 flex justify-center items-center"
-            >
-              {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Войти'}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
   useEffect(() => {
     if (isScanningRef.current) return;
     fetchData();
@@ -398,6 +362,42 @@ export default function App() {
       clearTimeout(timeoutId);
     };
   }, [scanStatus]);
+
+  if (!sessionId && !isDev) {
+    return (
+      <div className="min-h-screen bg-[#0A0A0C] text-white flex items-center justify-center p-6 font-sans">
+        <div className="w-full max-w-sm bg-zinc-900/50 border border-white/5 rounded-3xl p-8 shadow-2xl">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-emerald-500/20 rounded-2xl flex items-center justify-center">
+              <Lock className="w-8 h-8 text-emerald-400" />
+            </div>
+          </div>
+          <h1 className="text-2xl font-semibold text-center mb-2">CPE Роутер</h1>
+          <p className="text-zinc-500 text-sm text-center mb-8">Введите пароль администратора</p>
+          
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="Пароль"
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+            {loginError && <p className="text-red-400 text-xs text-center">{loginError}</p>}
+            <button
+              type="submit"
+              disabled={isLoggingIn || !loginPassword}
+              className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50 flex justify-center items-center"
+            >
+              {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Войти'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   const parseOperators = (rawData: string) => {
     // Очистка от всех префиксов +COPS:
@@ -1396,15 +1396,6 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                 </div>
               )}
               
-              <div className="mb-4 p-3 bg-black/20 rounded-xl border border-white/5 text-[10px] text-zinc-500 font-mono break-all">
-                DEBUG INFO:<br/>
-                IMSI: {data.imsi || 'empty'}<br/>
-                Numeric: {data.imsi?.length >= 5 ? data.imsi.substring(0, 5) : 'empty'}<br/>
-                SelectId: {data.selectId}<br/>
-                CurrentConfig: {data.currentConfig}<br/>
-                Configs Count: {formData.apnConfigs?.length || 0}
-              </div>
-
               {formData.apnConfigs?.map((apn: any) => {
                 // currentConfig может быть как ID, так и именем
                 const isActive = (data.selectId !== undefined && Number(data.selectId) === Number(apn.id)) || 
@@ -1449,15 +1440,19 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         <button 
-                          onClick={() => handleEditApn(apn)} 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditApn(apn);
+                          }} 
                           className="p-2 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-colors"
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
                         <button 
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             if (isActive) {
                               showToast('Нельзя удалить активный профиль', 'error');
                               return;
