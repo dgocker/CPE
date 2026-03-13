@@ -512,8 +512,13 @@ export default function App() {
             showToast('Не удалось подтвердить регистрацию', 'error');
           }
         } catch (e) {
-          setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
-          setConnectingTo(null);
+          console.warn('Check status attempt failed', e);
+          if (attempts < 15) {
+            setTimeout(checkStatus, 3000);
+          } else {
+            setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
+            setConnectingTo(null);
+          }
         }
       };
       
@@ -724,7 +729,8 @@ export default function App() {
             <motion.div key="network" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="mt-6">
               <h2 className="text-2xl font-semibold mb-6">Поиск сети</h2>
 
-              <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-4 mb-6 flex items-center justify-between">
+              {/* Network Selection Toggle */}
+              <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-4 mb-4 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-medium text-zinc-200">Выбор сети</h3>
                   <p className="text-xs text-zinc-500 mt-0.5">
@@ -742,6 +748,34 @@ export default function App() {
                   />
                 </button>
               </div>
+
+              {/* Current Operator Display (Only when not scanning) */}
+              {scanStatus !== 'scanning' && copsData && copsData.includes('"') && (
+                <div className="mb-6">
+                  <h4 className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold mb-2 px-1">Текущая сеть</h4>
+                  <div className="bg-zinc-900/50 border border-emerald-500/20 rounded-3xl p-4 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
+                        <Globe className="w-5 h-5 text-emerald-500" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium text-zinc-100">
+                          {copsData.split('"')[1] || 'Неизвестно'}
+                        </div>
+                        <div className="text-[10px] text-zinc-500 font-mono mt-0.5">
+                          {copsData.split(',').slice(-1)[0] === '7' ? '4G LTE' : 
+                           copsData.split(',').slice(-1)[0] === '2' ? '3G UMTS' : 
+                           copsData.split(',').slice(-1)[0] === '0' ? '2G GSM' : 'Connected'}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 px-3 py-1 bg-emerald-500/10 rounded-full">
+                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-tight">Активно</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {scanStatus === 'idle' || scanStatus === 'error' ? (
                 <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6 text-center">
