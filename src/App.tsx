@@ -8,15 +8,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- API Helper ---
-const apiCall = async (payload: any, timeoutMs = 15000) => {
+const apiCall = async (payload: any, timeoutMs = 10000) => {
   try {
     const sessionId = localStorage.getItem('sessionId');
-    
-    // Always include sessionId in payload, even if null, to match old HTML
-    payload.sessionId = sessionId || null;
-    
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (sessionId) {
+      payload.sessionId = sessionId;
       headers['Authorization'] = sessionId;
     }
     
@@ -31,19 +28,15 @@ const apiCall = async (payload: any, timeoutMs = 15000) => {
     });
     clearTimeout(timeoutId);
 
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    
-    const text = await response.text();
-    if (!text) throw new Error('Empty response');
-    
-    const json = JSON.parse(text);
+    if (!response.ok) throw new Error('Network response was not ok');
+    const json = await response.json();
     if (json.reply === 'Authorization') {
       localStorage.removeItem('sessionId');
       window.dispatchEvent(new Event('auth-error'));
       throw new Error('Authorization failed');
     }
     return json;
-  } catch (error: any) {
+  } catch (error) {
     console.warn('API call failed', error);
     throw error;
   }
@@ -54,14 +47,11 @@ const execAtCmd = async (cmd: string) => {
     const cmd_b64 = btoa(cmd);
     const response = await fetch('/cgi-bin/api', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ at_cmd_b64: cmd_b64 })
     });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    
-    const text = await response.text();
-    if (!text) throw new Error('Empty response');
-    
-    const d = JSON.parse(text);
+    if (!response.ok) throw new Error('Network response was not ok');
+    const d = await response.json();
     let resText = '';
     if (d.response_base64) {
       try { resText = atob(d.response_base64); } catch (e) { resText = '[Base64 Decode Error]'; }
@@ -70,7 +60,7 @@ const execAtCmd = async (cmd: string) => {
     }
     if (d.reply === 'error') throw new Error(d.message || 'AT command failed');
     return resText;
-  } catch (error: any) {
+  } catch (error) {
     console.warn('AT command failed', error);
     throw error;
   }
@@ -220,7 +210,7 @@ export default function App() {
       const res = await apiCall({
         fid: 'login',
         password: loginPassword
-      }, 10000); // Increased timeout to 10s
+      }, 2000);
       if (res.reply === 'ok' || res.session || res.sessionId) {
         const newSid = res.session || res.sessionId;
         localStorage.setItem('sessionId', newSid);
@@ -231,8 +221,8 @@ export default function App() {
       } else {
         setLoginError(res.reply || 'Login failed');
       }
-    } catch (e: any) {
-      setLoginError(e.message === 'Empty response' ? 'Empty response from router' : 'Network error');
+    } catch (e) {
+      setLoginError('Network error');
     }
     setIsLoggingIn(false);
   };
