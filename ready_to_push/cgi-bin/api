@@ -73,9 +73,10 @@ if [ -n "$AT_CMD" ]; then
         MAX_WAIT=5
         echo "$AT_CMD" | grep -q "sasd=1" && MAX_WAIT=90
 
-        C=0; while [ $C -lt "$MAX_WAIT" ]; do
+        C=0; MAX_ITER=$((MAX_WAIT * 10))
+        while [ $C -lt "$MAX_ITER" ]; do
             busybox tail -n 5 "$LOG_FILE" 2>/dev/null | grep -qE "OK|ERROR|\+CME ERROR" && break
-            sleep 1
+            busybox usleep 100000
             C=$((C + 1))
         done
 
