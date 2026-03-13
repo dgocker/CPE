@@ -192,7 +192,8 @@ export default function App() {
 
     // 2. Fetch APN
     try {
-      const apnRes = await apiCall({ fid: 'queryApn', fields: {} });
+      // Явно передаем id: -1 для получения всего списка, как в ApnManager.java
+      const apnRes = await apiCall({ fid: 'queryApn', fields: { id: -1, selectId: -1 } });
       console.log('APN Response:', apnRes);
       if (apnRes) {
          const f = apnRes.fields || apnRes;
@@ -1158,31 +1159,57 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
   const handleSaveApn = async () => {
     setIsSaving(true);
     try {
-      // Извлекаем MCC/MNC из IMSI для привязки профиля к SIM-карте
+      // Строго повторяем логику ApnManager.java для вычисления numeric, mcc, mnc
       const imsi = data.imsi || '';
-      const mcc = imsi.substring(0, 3) || '250';
-      const mnc = imsi.substring(3, 5) || '01';
+      const numeric = imsi.length >= 5 ? imsi.substring(0, 5) : '';
+      const mcc = numeric.length >= 3 ? numeric.substring(0, 3) : '';
+      const mnc = numeric.length >= 5 ? numeric.substring(3, 5) : '';
       
+      console.log('Saving APN with numeric:', numeric);
+
+      const isNew = editingApn.id === undefined || editingApn.id === null || editingApn.id === -1;
+      const fid = isNew ? 'addAPN' : 'updateAPN';
+
       const fields: any = {
-        id: (editingApn.id !== undefined && editingApn.id !== null) ? Number(editingApn.id) : -1,
+        id: isNew ? -1 : Number(editingApn.id),
+        // Дублируем ключи (для UI и для БД), чтобы точно попасть в обработчик
+        name: editingApn.name || editingApn.configName || 'New APN',
         configName: editingApn.name || editingApn.configName || 'New APN',
         apn: editingApn.apn || '',
+        
+        user: editingApn.apnUser || '',
         apnUser: editingApn.apnUser || '',
+        
+        password: editingApn.apnPassword || '',
         apnPassword: editingApn.apnPassword || '',
+        
+        proxy: editingApn.apnProxy || '',
         apnProxy: editingApn.apnProxy || '',
+        
+        port: editingApn.apnPort || '',
         apnPort: editingApn.apnPort || '',
+        
         pdpType: (editingApn.pdpType || 'IPV4').toUpperCase(),
         protocol: (editingApn.pdpType || 'IPV4').toUpperCase(),
+        
         authtype: parseInt(editingApn.authtype?.toString() || '0'),
         mcc: mcc,
         mnc: mnc,
-        numeric: mcc + mnc,
-        type: 'default'
+        numeric: numeric,
+        type: 'default',
+        server: ''
       };
 
-      await onSystemAction('setApn', fields);
+      let res = await apiCall({ fid, fields });
+      if (res?.reply === 'error') {
+        // Fallback to setApn if addAPN/updateAPN fails
+        res = await apiCall({ fid: 'setApn', fields });
+      }
+      if (res?.reply === 'error') throw new Error('Failed to save APN');
+
       setEditingApn(null);
       showToast('Профиль APN сохранен');
+      // Даем роутеру время обновить БД
       setTimeout(fetchData, 2000);
     } catch (e: any) {
       showToast(e.message || 'Ошибка при сохранении APN', 'error');
@@ -1194,7 +1221,13 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
   const handleSetDefaultApn = async (id: number) => {
     setIsSaving(true);
     try {
-      await onSystemAction('setDefaultApn', { id });
+      let res = await apiCall({ fid: 'setDefaultApn', fields: { id } });
+      if (res?.reply === 'error') {
+        // Fallback to the typo found in ApnManager.java
+        res = await apiCall({ fid: 'setDefalutApn', fields: { id } });
+      }
+      if (res?.reply === 'error') throw new Error('Failed to set default APN');
+      
       showToast('Профиль APN установлен по умолчанию');
       setTimeout(fetchData, 2000);
     } catch (e: any) {
@@ -1362,6 +1395,16 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                   </button>
                 </div>
               )}
+              
+              <div className="mb-4 p-3 bg-black/20 rounded-xl border border-white/5 text-[10px] text-zinc-500 font-mono break-all">
+                DEBUG INFO:<br/>
+                IMSI: {data.imsi || 'empty'}<br/>
+                Numeric: {data.imsi?.length >= 5 ? data.imsi.substring(0, 5) : 'empty'}<br/>
+                SelectId: {data.selectId}<br/>
+                CurrentConfig: {data.currentConfig}<br/>
+                Configs Count: {formData.apnConfigs?.length || 0}
+              </div>
+
               {formData.apnConfigs?.map((apn: any) => {
                 // currentConfig может быть как ID, так и именем
                 const isActive = (data.selectId !== undefined && Number(data.selectId) === Number(apn.id)) || 
@@ -1420,7 +1463,10 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                               return;
                             }
                             if (window.confirm(`Удалить профиль "${apn.name || apn.configName || 'Без названия'}"?`)) {
-                              onSystemAction('deleteApn', { id: apn.id });
+                              apiCall({ fid: 'deleteApn', fields: { id: apn.id } }).then(res => {
+                                if (res?.reply === 'error') return apiCall({ fid: 'deleteAPN', fields: { id: apn.id } });
+                                return res;
+                              }).then(() => setTimeout(fetchData, 1000));
                             }
                           }} 
                           className="p-2 text-red-400/60 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
