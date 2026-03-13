@@ -116,7 +116,7 @@ const MOCK_DATA = {
   // LAN
   ipAddress: '192.168.1.1', subnetMask: '255.255.255.0', dhcpSwitch: 'on', dhcpFrom: '192.168.1.100', dhcpTo: '192.168.1.200', dhcpLeases: 24, ethType: 'lan',
   // Mobile
-  TTL: '64', FreqBand: 'B1,B3,B7',
+  TTL: '64',
   // APN
   apnMode: 'auto', currentConfig: '1',
   apnConfigs: [
@@ -984,6 +984,109 @@ function SettingsMenuItem({ icon, label, onClick }: { icon: React.ReactNode, lab
 
 // --- Settings Sub-Pages ---
 
+function BandManager({ showToast }: { showToast: (msg: string, type?: 'success'|'error') => void }) {
+  const [bands, setBands] = useState<string[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const availableBands = [
+    { val: '0x1', label: 'B1 (2100)' },
+    { val: '0x4', label: 'B3 (1800)' },
+    { val: '0x40', label: 'B7 (2600)' },
+    { val: '0x80', label: 'B8 (900)' },
+    { val: '0x80000', label: 'B20 (800)' },
+    { val: '0x2000000000', label: 'B38 (2600)' },
+    { val: '0x8000000000', label: 'B40 (2300)' }
+  ];
+
+  const readBands = async () => {
+    setIsLoading(true);
+    try {
+      const d = await apiCall({ at_cmd_b64: btoa('AT+QCFG="band"') });
+      let resText = '';
+      if (d.response_base64) {
+        try { resText = atob(d.response_base64); } catch (e) {}
+      } else if (d.response) {
+        resText = d.response;
+      }
+      
+      const match = resText.match(/"band",0x[0-9a-fA-F]+,0x([0-9a-fA-F]+),/);
+      if (match && match[1]) {
+        const mask = BigInt('0x' + match[1]);
+        const currentBands = availableBands.filter(b => (mask & BigInt(b.val)) === BigInt(b.val)).map(b => b.val);
+        setBands(currentBands);
+        showToast('Диапазоны успешно прочитаны');
+      } else {
+        showToast('Не удалось прочитать диапазоны', 'error');
+      }
+    } catch (e) {
+      showToast('Ошибка при чтении диапазонов', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const applyBands = async () => {
+    if (bands.length === 0) {
+      showToast('Выберите хотя бы один диапазон', 'error');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      let mask = BigInt(0);
+      bands.forEach(b => { mask |= BigInt(b); });
+      const hexMask = mask.toString(16).toUpperCase();
+      const cmd = `AT+QCFG="band",0,${hexMask},1`;
+      
+      await apiCall({ at_cmd_b64: btoa(cmd) });
+      showToast('Диапазоны успешно применены');
+    } catch (e) {
+      showToast('Ошибка при применении диапазонов', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="px-4 py-3 bg-black/20 rounded-2xl border border-white/5">
+      <div className="flex items-center justify-between mb-3">
+        <label className="text-sm font-medium text-zinc-400">Диапазоны частот (Bands)</label>
+        <button onClick={readBands} disabled={isLoading} className="text-xs text-emerald-400 hover:underline disabled:opacity-50">
+          Прочитать текущие
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2 mb-3">
+        {availableBands.map(band => {
+          const isSelected = bands.includes(band.val);
+          return (
+            <label key={band.val} className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer bg-black/40 px-3 py-2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
+              <input 
+                type="checkbox" 
+                checked={isSelected}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setBands([...bands, band.val]);
+                  } else {
+                    setBands(bands.filter(b => b !== band.val));
+                  }
+                }}
+                className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" 
+              />
+              {band.label}
+            </label>
+          );
+        })}
+      </div>
+      <button 
+        onClick={applyBands} 
+        disabled={isLoading || bands.length === 0}
+        className="w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 py-2 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+      >
+        {isLoading ? 'Применение...' : 'Применить выбранные диапазоны'}
+      </button>
+    </div>
+  );
+}
+
 function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast, fetchData }: { key?: string, page: string, data: any, onBack: () => void, onSave: (fid: string, fields: any, timeoutMs?: number) => void, onSystemAction: (fid: string, fields?: any) => void, showToast: (msg: string, type?: 'success'|'error') => void, fetchData: () => void }) {
   const [formData, setFormData] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
@@ -1119,7 +1222,6 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
       fieldsToSave = {
         netWorkMode: parseInt(formData.netWorkMode),
         TTL: formData.TTL,
-        FreqBand: formData.FreqBand,
         apnMode: formData.apnMode
       };
     } else if (page === 'sim') {
@@ -1383,44 +1485,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
             <FormGroup>
               <SelectRow label="Режим сети" value={formData.netWorkMode?.toString()} onChange={(v) => handleChange('netWorkMode', v)} options={[{l:'Авто (3G/4G)', v:'12'}, {l:'Только 4G LTE', v:'11'}, {l:'Только 3G', v:'2'}]} />
               <InputRow label="Значение TTL" value={formData.TTL} onChange={(v) => handleChange('TTL', v)} type="number" />
-              <div className="px-4 py-3 bg-black/20 rounded-2xl border border-white/5">
-                <label className="block text-sm font-medium text-zinc-400 mb-3">Диапазоны частот (Bands)</label>
-                <div className="flex flex-wrap gap-2">
-                  {['B1', 'B3', 'B7', 'B8', 'B20', 'B38', 'B40'].map(band => {
-                    const isSelected = formData.FreqBand && formData.FreqBand !== 'cn_all' ? formData.FreqBand.split(',').includes(band) : false;
-                    return (
-                      <label key={band} className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer bg-black/40 px-3 py-2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                        <input 
-                          type="checkbox" 
-                          checked={isSelected}
-                          onChange={(e) => {
-                            let currentBands = formData.FreqBand && formData.FreqBand !== 'cn_all' ? formData.FreqBand.split(',').filter(Boolean) : [];
-                            if (e.target.checked) {
-                              if (!currentBands.includes(band)) currentBands.push(band);
-                            } else {
-                              currentBands = currentBands.filter((b: string) => b !== band);
-                            }
-                            handleChange('FreqBand', currentBands.length > 0 ? currentBands.join(',') : 'cn_all');
-                          }}
-                          className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" 
-                        />
-                        {band}
-                      </label>
-                    );
-                  })}
-                  <label className="flex items-center gap-2 text-sm text-zinc-300 cursor-pointer bg-black/40 px-3 py-2 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                    <input 
-                      type="checkbox" 
-                      checked={!formData.FreqBand || formData.FreqBand === 'cn_all'}
-                      onChange={(e) => {
-                        if (e.target.checked) handleChange('FreqBand', 'cn_all');
-                      }}
-                      className="w-4 h-4 rounded border-white/10 bg-black/50 text-emerald-500 focus:ring-emerald-500/20" 
-                    />
-                    Авто (Все)
-                  </label>
-                </div>
-              </div>
+              <BandManager showToast={showToast} />
             </FormGroup>
 
             <div className="mt-4 mb-4 flex items-center justify-between px-4">
