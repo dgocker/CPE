@@ -128,8 +128,8 @@ const MOCK_DATA = {
   // Watchdog
   testConnect: false, pingAddress1: '8.8.8.8', pingAddress2: '1.1.1.1', pingAddress3: '', testInterval: 60, testTimes: 3,
   // System Info
-  imei: '864293054744665', imsi: '250970123456789', iccid: '8970101122334455667', mac: '00:11:22:33:44:55', hardwareVersion: 'V1.0', systemVersion: 'UFI103_CT_V5',
-  usbMode: 0, language: 'en',
+  imei: '864293054744665', imsi: '250970123456789', iccId: '8970101122334455667', mac: '00:11:22:33:44:55', hardwareVersion: 'V1.0', systemVersion: 'UFI103_CT_V5',
+  usbMode: 0, language: 'en', imeiSwitch: true,
   // Devices
   deviceCounts: { ethCount: 0, wifiCount: 2 },
   deviceList: [
@@ -1064,7 +1064,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
     let timeoutMs = 10000;
 
     if (page === 'wifi') {
-      fid = 'setWifi';
+      fid = 'setFields';
       timeoutMs = 20000;
       if (formData.ssidName?.length < 5 || formData.ssidName?.length > 32) {
         showToast('Имя сети (SSID) должно быть от 5 до 32 символов', 'error');
@@ -1077,15 +1077,14 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
       fieldsToSave = {
         wifiApSwitch: toStr(formData.wifiApSwitch),
         ssidName: formData.ssidName,
-        ssidBroadcast: formData.ssidBroadcast,
+        ssidBroadcast: toStr(formData.ssidBroadcast),
         ssidSecureMode: formData.ssidSecureMode,
         ssidPassword: formData.ssidPassword,
         ssidMaxUserCount: parseInt(formData.ssidMaxUserCount),
-        channleType: parseInt(formData.channleType),
-        channelSelect: parseInt(formData.channleType)
+        channleType: parseInt(formData.channleType)
       };
     } else if (page === 'lan') {
-      fid = 'setGW';
+      fid = 'setFields';
       timeoutMs = 20000;
       fieldsToSave = {
         ipAddress: formData.ipAddress,
@@ -1093,7 +1092,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         dhcpSwitch: toStr(formData.dhcpSwitch),
         dhcpFrom: formData.dhcpFrom,
         dhcpTo: formData.dhcpTo,
-        dhcpLeases: formData.dhcpLeases,
+        dhcpLeases: parseInt(formData.dhcpLeases),
         ethType: formData.ethType
       };
     } else if (page === 'mobile') {
@@ -1104,7 +1103,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         apnMode: formData.apnMode
       };
     } else if (page === 'sim') {
-      fid = 'switchSimCard';
+      fid = 'setFields';
       fieldsToSave = { simCardCurrent: parseInt(formData.simCardCurrent) };
       if (data.simCardSwitchCheck) {
         if (!formData.simPassword) {
@@ -1116,7 +1115,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
     } else if (page === 'watchdog') {
       fid = 'setFields';
       fieldsToSave = {
-        testConnect: formData.testConnect,
+        testConnect: toStr(formData.testConnect),
         pingAddress1: formData.pingAddress1,
         pingAddress2: formData.pingAddress2,
         pingAddress3: formData.pingAddress3,
@@ -1159,6 +1158,11 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
   const handleSaveApn = async () => {
     setIsSaving(true);
     try {
+      // Извлекаем MCC/MNC из IMSI для привязки профиля к SIM-карте
+      const imsi = data.imsi || '';
+      const mcc = imsi.substring(0, 3) || '250';
+      const mnc = imsi.substring(3, 5) || '01';
+      
       const fields: any = {
         id: (editingApn.id !== undefined && editingApn.id !== null) ? Number(editingApn.id) : -1,
         configName: editingApn.name || editingApn.configName || 'New APN',
@@ -1168,7 +1172,12 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         apnProxy: editingApn.apnProxy || '',
         apnPort: editingApn.apnPort || '',
         pdpType: (editingApn.pdpType || 'IPV4').toUpperCase(),
+        protocol: (editingApn.pdpType || 'IPV4').toUpperCase(),
         authtype: parseInt(editingApn.authtype?.toString() || '0'),
+        mcc: mcc,
+        mnc: mnc,
+        numeric: mcc + mnc,
+        type: 'default'
       };
 
       await onSystemAction('setApn', fields);
@@ -1355,9 +1364,8 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               )}
               {formData.apnConfigs?.map((apn: any) => {
                 // currentConfig может быть как ID, так и именем
-                const isActive = data.selectId !== undefined 
-                  ? (Number(data.selectId) === Number(apn.id)) 
-                  : (formData.currentConfig == apn.id || formData.currentConfig === apn.name || formData.currentConfig === apn.configName);
+                const isActive = (data.selectId !== undefined && Number(data.selectId) === Number(apn.id)) || 
+                                 (data.currentConfig === (apn.name || apn.configName));
                 return (
                   <div 
                     key={apn.id} 
@@ -1486,7 +1494,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               <InfoRow label="Аппаратная версия" value={data.hardwareVersion} />
               <InfoRow label="Версия прошивки" value={data.systemVersion} />
               <InfoRow label="MAC-адрес" value={data.mac} />
-              <InfoRow label="ICCID" value={data.iccid} />
+              <InfoRow label="ICCID" value={data.iccId} />
               <InfoRow label="IMSI" value={data.imsi} />
               <InfoRow label="Текущий IMEI" value={data.imei} />
             </FormGroup>
