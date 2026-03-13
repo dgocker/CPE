@@ -116,7 +116,7 @@ const MOCK_DATA = {
   // LAN
   ipAddress: '192.168.1.1', subnetMask: '255.255.255.0', dhcpSwitch: 'on', dhcpFrom: '192.168.1.100', dhcpTo: '192.168.1.200', dhcpLeases: 24, ethType: 'lan',
   // Mobile
-  ttl: '64', 
+  TTL: '64', FreqBand: 'B1,B3,B7',
   // APN
   apnMode: 'auto', currentConfig: '1',
   apnConfigs: [
@@ -1055,7 +1055,35 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
 
   const handleChange = (key: string, value: any) => {
     touchedFields.current.add(key);
-    setFormData((prev: any) => ({ ...prev, [key]: value }));
+    setFormData((prev: any) => {
+      const newData = { ...prev, [key]: value };
+      
+      // Автоматически меняем подсеть для DHCP при смене IP-адреса роутера
+      if (key === 'ipAddress' && value && typeof value === 'string') {
+        const ipParts = value.split('.');
+        if (ipParts.length === 4) {
+          const prefix = ipParts.slice(0, 3).join('.');
+          
+          if (prev.dhcpFrom) {
+            const fromParts = prev.dhcpFrom.split('.');
+            if (fromParts.length === 4) {
+              newData.dhcpFrom = `${prefix}.${fromParts[3]}`;
+              touchedFields.current.add('dhcpFrom');
+            }
+          }
+          
+          if (prev.dhcpTo) {
+            const toParts = prev.dhcpTo.split('.');
+            if (toParts.length === 4) {
+              newData.dhcpTo = `${prefix}.${toParts[3]}`;
+              touchedFields.current.add('dhcpTo');
+            }
+          }
+        }
+      }
+      
+      return newData;
+    });
   };
 
   const handleSave = async () => {
@@ -1085,22 +1113,57 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         channleType: parseInt(formData.channleType)
       };
     } else if (page === 'lan') {
-      fid = 'setFields';
-      timeoutMs = 20000;
+      const ipRegex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+      if (!ipRegex.test(formData.ipAddress) || !ipRegex.test(formData.dhcpFrom) || !ipRegex.test(formData.dhcpTo)) {
+        showToast('Неверный формат IP-адреса', 'error');
+        setIsSaving(false); return;
+      }
+      
+      const ipPrefix = formData.ipAddress.split('.').slice(0, 3).join('.');
+      const fromPrefix = formData.dhcpFrom.split('.').slice(0, 3).join('.');
+      const toPrefix = formData.dhcpTo.split('.').slice(0, 3).join('.');
+      
+      if (ipPrefix !== fromPrefix || ipPrefix !== toPrefix) {
+        showToast('Диапазон DHCP должен быть в той же подсети, что и IP-адрес роутера', 'error');
+        setIsSaving(false); return;
+      }
+
+      const ipLast = parseInt(formData.ipAddress.split('.')[3], 10);
+      const fromLast = parseInt(formData.dhcpFrom.split('.')[3], 10);
+      const toLast = parseInt(formData.dhcpTo.split('.')[3], 10);
+
+      if (ipLast === 0 || ipLast === 255 || fromLast === 0 || fromLast === 255 || toLast === 0 || toLast === 255) {
+        showToast('IP-адрес не может оканчиваться на 0 или 255', 'error');
+        setIsSaving(false); return;
+      }
+
+      if (fromLast >= toLast) {
+        showToast('Начальный IP DHCP должен быть меньше конечного', 'error');
+        setIsSaving(false); return;
+      }
+
+      if (ipLast >= fromLast && ipLast <= toLast) {
+        showToast('IP-адрес роутера не должен входить в диапазон DHCP', 'error');
+        setIsSaving(false); return;
+      }
+
+      fid = 'setGW'; // Используем специальную команду для применения настроек LAN
+      timeoutMs = 30000; // Увеличиваем таймаут, так как роутер уходит в перезагрузку
       fieldsToSave = {
         ipAddress: formData.ipAddress,
         subnetMask: formData.subnetMask,
         dhcpSwitch: toStr(formData.dhcpSwitch),
         dhcpFrom: formData.dhcpFrom,
         dhcpTo: formData.dhcpTo,
-        dhcpLeases: parseInt(formData.dhcpLeases),
+        dhcpLeases: (formData.dhcpLeases || 24).toString() + 'h', // В SetGW.java не добавляется 'h', поэтому добавляем сами
         ethType: formData.ethType
       };
     } else if (page === 'mobile') {
       fid = 'setFields';
       fieldsToSave = {
         netWorkMode: parseInt(formData.netWorkMode),
-        ttl: formData.ttl,
+        TTL: formData.TTL,
+        FreqBand: formData.FreqBand,
         apnMode: formData.apnMode
       };
     } else if (page === 'sim') {
@@ -1131,7 +1194,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
       };
       if (formData.newImei) {
         fieldsToSave.imei = formData.newImei;
-        fieldsToSave.zxcvbn = 'zxcvbn';
+        fieldsToSave.zxcvbn = formData.imeiPassword || '';
       }
     }
 
@@ -1334,7 +1397,9 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               onChange={(v) => handleChange('channleType', v)} 
               options={[
                 { l: 'Авто', v: '0' },
-                ...Array.from({ length: 13 }, (_, i) => ({ l: `Канал ${i + 1}`, v: `${i + 1}` }))
+                { l: 'Канал 1', v: '1' },
+                { l: 'Канал 6', v: '6' },
+                { l: 'Канал 11', v: '11' }
               ]} 
             />
           </FormGroup>
@@ -1361,7 +1426,8 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
           <>
             <FormGroup>
               <SelectRow label="Режим сети" value={formData.netWorkMode?.toString()} onChange={(v) => handleChange('netWorkMode', v)} options={[{l:'Авто (3G/4G)', v:'12'}, {l:'Только 4G LTE', v:'11'}, {l:'Только 3G', v:'2'}]} />
-              <InputRow label="Значение TTL" value={formData.ttl} onChange={(v) => handleChange('ttl', v)} type="number" />
+              <InputRow label="Значение TTL" value={formData.TTL} onChange={(v) => handleChange('TTL', v)} type="number" />
+              <InputRow label="Диапазоны частот" value={formData.FreqBand || ''} onChange={(v) => handleChange('FreqBand', v)} placeholder="Например: B1,B3,B7 или cn_all" />
             </FormGroup>
 
             <div className="mt-4 mb-4 flex items-center justify-between px-4">
@@ -1552,6 +1618,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
             <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Изменить IMEI</h3>
             <FormGroup>
               <InputRow label="Новый IMEI" value={formData.newImei || ''} onChange={(v) => handleChange('newImei', v)} placeholder="15 цифр" />
+              <InputRow label="Пароль для IMEI" value={formData.imeiPassword || ''} onChange={(v) => handleChange('imeiPassword', v)} type="password" />
             </FormGroup>
 
             <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Системные действия</h3>
