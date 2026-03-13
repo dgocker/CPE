@@ -9,7 +9,8 @@ branches: [ "main" ]
 jobs:
 build:
 runs-on: ubuntu-latest
-code Code
+
+
 
 steps:
   # 1. Скачиваем код репозитория
