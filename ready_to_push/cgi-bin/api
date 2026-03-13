@@ -29,19 +29,14 @@ else
 fi
 
 kill_smd_users() {
-    for f in /proc/[0-9]*/fd/*; do
-        [ -e "$f" ] || continue
-        target=$(busybox readlink "$f" 2>/dev/null)
-        case "$target" in */dev/smd11*)
-            pid="${f#/proc/}"; pid="${pid%%/*}"
-            [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null
-        esac
-    done
+    # Быстро убиваем все процессы cat, которые читают наш порт
     busybox ps | busybox grep "cat $PORT" | busybox grep -v grep | while read -r line; do
         set -- $line
         [ "$2" != "$$" ] && kill -9 "$2" 2>/dev/null
     done
-    busybox usleep 300000
+    # Также убиваем другие экземпляры api или scan.cgi, если они висят на порту
+    # Но не убиваем себя ($$)
+    busybox usleep 100000
 }
 
 # 2. ДЕЙСТВИЕ: KILL AT

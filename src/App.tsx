@@ -483,28 +483,33 @@ export default function App() {
       const checkStatus = async () => {
         attempts++;
         try {
-          const res = await apiCall({ fid: 'terminal', fields: { command: 'AT+COPS?' } });
-          const output = res.reply || '';
+          // Запрашиваем и COPS, и текущий IP, чтобы избежать проблем со старыми данными
+          const [copsRes, fieldsRes] = await Promise.all([
+            apiCall({ fid: 'terminal', fields: { command: 'AT+COPS?' } }),
+            apiCall({ fid: 'queryFields', fields: { wanIpAddress: '' } })
+          ]);
+
+          const output = copsRes.reply || '';
+          const currentIp = fieldsRes.fields?.wanIpAddress || '0.0.0.0';
           
-          // Проверяем наличие нужного кода оператора в ответе
-          if (output.includes(numeric)) {
+          // Успех если: 
+          // 1. В ответе COPS есть код оператора
+          // 2. ИЛИ появился реальный IP адрес (значит интернет уже работает)
+          const isConnectedInCops = output.includes(numeric);
+          const hasInternet = currentIp !== '0.0.0.0' && currentIp !== '';
+
+          if (isConnectedInCops || hasInternet) {
             setConnectionResults(prev => ({ ...prev, [numeric]: 'success' }));
             setConnectingTo(null);
-            setIsAutoMode(false); // Мы точно в ручном режиме
+            setIsAutoMode(false);
             fetchData();
-            showToast('Подключено успешно', 'success');
+            showToast(isConnectedInCops ? 'Подключено успешно' : 'Подключено (интернет активен)', 'success');
           } else if (attempts < 15) {
             setTimeout(checkStatus, 3000);
           } else {
-            // Если время вышло, но интернет появился (wanIpAddress), считаем успехом
-            if (data.wanIpAddress && data.wanIpAddress !== '0.0.0.0') {
-              setConnectionResults(prev => ({ ...prev, [numeric]: 'success' }));
-              showToast('Подключено (регистрация заняла время)', 'success');
-            } else {
-              setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
-              showToast('Не удалось подтвердить регистрацию в сети', 'error');
-            }
+            setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
             setConnectingTo(null);
+            showToast('Не удалось подтвердить регистрацию', 'error');
           }
         } catch (e) {
           setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));

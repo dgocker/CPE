@@ -20,15 +20,12 @@ log() {
 
 # Функция очистки порта (ВАШ КОД)
 kill_smd_users() {
-    for f in /proc/[0-9]*/fd/*; do
-        target=$(busybox readlink "$f" 2>/dev/null)
-        case "$target" in
-            */dev/smd11*)
-                pid="${f#/proc/}"; pid="${pid%%/*}"
-                [ "$pid" != "$$" ] && kill -9 "$pid" 2>/dev/null
-                ;;
-        esac
+    # Быстро убиваем все процессы cat, которые читают наш порт
+    busybox ps | busybox grep "cat $PORT" | busybox grep -v grep | while read -r line; do
+        set -- $line
+        [ "$2" != "$$" ] && kill -9 "$2" 2>/dev/null
     done
+    busybox usleep 100000
 }
 
 if [ "$ACTION" = "log" ]; then
