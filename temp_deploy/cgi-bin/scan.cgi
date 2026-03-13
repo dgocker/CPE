@@ -49,6 +49,7 @@ if [ "$ACTION" = "start" ]; then
 
     log "=== START SCAN ==="
     kill_smd_users # Освобождаем порт перед началом
+    sleep 1
 
     busybox stty -F "$PORT" 115200 raw -echo
 
@@ -82,7 +83,9 @@ if [ "$ACTION" = "start" ]; then
             }
 
             # ПОСЛЕДОВАТЕЛЬНОСТЬ
-            wait_cmd 15 "AT+COPS=2"  # Уходим в офлайн
+            # Пробуем отключить интернет несколько раз, если не вышло
+            wait_cmd 15 "AT+COPS=2" || wait_cmd 15 "AT+COPS=2"
+            
             wait_cmd 180 "AT+COPS=?" # Ищем сети
 
             # МЫ НЕ ОТПРАВЛЯЕМ COPS=0, чтобы модем не подключался сам
@@ -96,6 +99,13 @@ if [ "$ACTION" = "start" ]; then
     ) >/dev/null 2>&1 </dev/null &
 
     echo '{"status": "started"}'
+    exit 0
+
+elif [ "$ACTION" = "stop" ]; then
+    log "=== STOP SCAN ==="
+    kill_smd_users
+    rmdir "$LOCKDIR" 2>/dev/null
+    echo '{"status": "stopped"}'
     exit 0
 
 elif [ "$ACTION" = "status" ]; then

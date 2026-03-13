@@ -70,13 +70,14 @@ if [ "$ACTION" = "start" ]; then
                 log "Sent: $cmd"
 
                 local count=0
-                while [ "$count" -lt "$timeout" ]; do
+                local max_iter=$((timeout * 5))
+                while [ "$count" -lt "$max_iter" ]; do
                     if busybox sed -n "/$marker/,\$p" "$RAW_LOG" | busybox grep -qE "OK|ERROR"; then
                         log "Got response for $cmd"
                         return 0
                     fi
-                    sleep 2
-                    count=$((count + 2))
+                    busybox usleep 200000
+                    count=$((count + 1))
                 done
                 log "Timeout for $cmd"
                 return 1
@@ -150,12 +151,12 @@ elif [ "$ACTION" = "exec" ]; then
         log "Exec Sent: $CMD"
         
         count=0
-        timeout=30
-        while [ "$count" -lt "$timeout" ]; do
+        max_iter=$((timeout * 5))
+        while [ "$count" -lt "$max_iter" ]; do
             if busybox grep -qE "OK|ERROR" "$RAW_LOG"; then
                 break
             fi
-            sleep 1
+            busybox usleep 200000
             count=$((count + 1))
         done
 

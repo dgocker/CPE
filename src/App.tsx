@@ -153,7 +153,7 @@ export default function App() {
   const [data, setData] = useState<any>({}); // Start empty to avoid stale mock data
   const [isInitialLoading, setIsInitialLoading] = useState(true);
   const [copsData, setCopsData] = useState('');
-  const [isAutoMode, setIsAutoMode] = useState(true);
+  const [isAutoMode, setIsAutoMode] = useState<boolean | null>(null);
   const [toast, setToast] = useState<{msg: string, type: 'success'|'error'} | null>(null);
   
   // Network Scan State
@@ -213,10 +213,13 @@ export default function App() {
         if (match) {
           const parsedStr = match[1].trim();
           setCopsData('+COPS: ' + parsedStr);
-          const mode = parsedStr.split(',')[0];
+          // Формат может быть: 0 или 0,0,"Operator" или 1,2,"25001"
+          const parts = parsedStr.split(',');
+          const mode = parts[0];
           setIsAutoMode(mode === '0');
         } else {
           setCopsData(copsStr.trim());
+          // Если просто OK или пусто, не меняем режим
         }
       }
     } catch (e) {
@@ -475,7 +478,7 @@ export default function App() {
       // Отправка команды подключения
       await execAtCmd(`AT+COPS=1,2,"${numeric}"`);
       
-      // Опрос статуса (проверка AT+COPS? каждые 3с, до 5 раз)
+      // Опрос статуса (проверка AT+COPS? каждые 3с, до 15 раз = 45 сек)
       let attempts = 0;
       const checkStatus = async () => {
         attempts++;
@@ -483,17 +486,25 @@ export default function App() {
           const res = await apiCall({ fid: 'terminal', fields: { command: 'AT+COPS?' } });
           const output = res.reply || '';
           
-          if (output.includes(`"${numeric}"`)) {
+          // Проверяем наличие нужного кода оператора в ответе
+          if (output.includes(numeric)) {
             setConnectionResults(prev => ({ ...prev, [numeric]: 'success' }));
             setConnectingTo(null);
+            setIsAutoMode(false); // Мы точно в ручном режиме
             fetchData();
             showToast('Подключено успешно', 'success');
-          } else if (attempts < 5) {
+          } else if (attempts < 15) {
             setTimeout(checkStatus, 3000);
           } else {
-            setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
+            // Если время вышло, но интернет появился (wanIpAddress), считаем успехом
+            if (data.wanIpAddress && data.wanIpAddress !== '0.0.0.0') {
+              setConnectionResults(prev => ({ ...prev, [numeric]: 'success' }));
+              showToast('Подключено (регистрация заняла время)', 'success');
+            } else {
+              setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
+              showToast('Не удалось подтвердить регистрацию в сети', 'error');
+            }
             setConnectingTo(null);
-            showToast('Не удалось подключиться к сети', 'error');
           }
         } catch (e) {
           setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
@@ -711,11 +722,14 @@ export default function App() {
               <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-4 mb-6 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-medium text-zinc-200">Выбор сети</h3>
-                  <p className="text-xs text-zinc-500 mt-0.5">{isAutoMode ? 'Автоматический режим' : 'Ручной режим'}</p>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    {isAutoMode === null ? 'Определение...' : isAutoMode ? 'Автоматический режим' : 'Ручной режим'}
+                  </p>
                 </div>
                 <button 
                   onClick={() => toggleAutoMode(!isAutoMode)}
-                  className={`w-12 h-6 rounded-full transition-colors relative ${isAutoMode ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                  disabled={isAutoMode === null}
+                  className={`w-12 h-6 rounded-full transition-colors relative ${isAutoMode ? 'bg-emerald-500' : 'bg-zinc-700'} ${isAutoMode === null ? 'opacity-50' : ''}`}
                 >
                   <motion.div 
                     animate={{ x: isAutoMode ? 24 : 2 }} 
