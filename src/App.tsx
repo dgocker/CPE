@@ -8,12 +8,19 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- API Helper ---
-const apiCall = async (payload: any, timeoutMs = 10000) => {
+const apiCall = async (payload: any, timeoutMs = 15000) => {
   try {
     const sessionId = localStorage.getItem('sessionId');
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    
+    // Always include sessionId in payload ONLY if it exists
     if (sessionId) {
       payload.sessionId = sessionId;
+    }
+    
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (sessionId) {
       headers['Authorization'] = sessionId;
     }
     
@@ -28,15 +35,26 @@ const apiCall = async (payload: any, timeoutMs = 10000) => {
     });
     clearTimeout(timeoutId);
 
-    if (!response.ok) throw new Error('Network response was not ok');
-    const json = await response.json();
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    
+    const text = await response.text();
+    if (!text) throw new Error('Empty response');
+    
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      throw new Error('Invalid JSON response from router');
+    }
+
     if (json.reply === 'Authorization') {
       localStorage.removeItem('sessionId');
       window.dispatchEvent(new Event('auth-error'));
       throw new Error('Authorization failed');
     }
     return json;
-  } catch (error) {
+  } catch (error: any) {
+    if (error.name === 'AbortError') throw new Error('Request timeout');
     console.warn('API call failed', error);
     throw error;
   }
@@ -45,13 +63,8 @@ const apiCall = async (payload: any, timeoutMs = 10000) => {
 const execAtCmd = async (cmd: string) => {
   try {
     const cmd_b64 = btoa(cmd);
-    const response = await fetch('/cgi-bin/api', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ at_cmd_b64: cmd_b64 })
-    });
-    if (!response.ok) throw new Error('Network response was not ok');
-    const d = await response.json();
+    const d = await apiCall({ at_cmd_b64: cmd_b64 });
+    
     let resText = '';
     if (d.response_base64) {
       try { resText = atob(d.response_base64); } catch (e) { resText = '[Base64 Decode Error]'; }
@@ -60,13 +73,41 @@ const execAtCmd = async (cmd: string) => {
     }
     if (d.reply === 'error') throw new Error(d.message || 'AT command failed');
     return resText;
-  } catch (error) {
+  } catch (error: any) {
     console.warn('AT command failed', error);
     throw error;
   }
 };
 
 // --- Mock Data for Development ---
+// --- Constants & Mapping ---
+const isDev = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || 
+   window.location.hostname === '127.0.0.1' || 
+   window.location.hostname.includes('run.app'));
+
+const MCC_MNC_MAP: Record<string, string> = {
+  '25001': 'MTS',
+  '25002': 'MegaFon',
+  '25003': 'MTS',
+  '25011': 'Yota',
+  '25017': 'MTS',
+  '25020': 'Tele2',
+  '25028': 'Beeline',
+  '25035': 'MOTIV',
+  '25039': 'Rostelecom',
+  '25099': 'Beeline',
+  '40101': 'Beeline KZ',
+  '40102': 'Kcell',
+  '40177': 'Tele2 KZ',
+  '25501': 'Vodafone UA',
+  '25502': 'Kyivstar',
+  '25503': 'Lifecell',
+  '25701': 'A1 BY',
+  '25702': 'MTS BY',
+  '25704': 'life:) BY'
+};
+
 const MOCK_DATA = {
   // Dashboard
   internetState: 'connected', signalStrength: -65, carrier: 'MTS RUS', netWorkMode: 11, wanIpAddress: '100.64.23.11',
@@ -109,8 +150,9 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeSettingsPage, setActiveSettingsPage] = useState<string | null>(null);
-  const [data, setData] = useState<any>(process.env.NODE_ENV === 'development' ? MOCK_DATA : {});
-  const [copsData, setCopsData] = useState('+COPS: 0,0,"MTS RUS",7');
+  const [data, setData] = useState<any>({}); // Start empty to avoid stale mock data
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [copsData, setCopsData] = useState('');
   const [isAutoMode, setIsAutoMode] = useState(true);
   const [toast, setToast] = useState<{msg: string, type: 'success'|'error'} | null>(null);
   
@@ -118,6 +160,7 @@ export default function App() {
   const [scanStatus, setScanStatus] = useState<'idle' | 'scanning' | 'done' | 'error'>('idle');
   const [operators, setOperators] = useState<any[]>([]);
   const [connectingTo, setConnectingTo] = useState<string | null>(null);
+  const [connectionResults, setConnectionResults] = useState<Record<string, 'success' | 'error' | 'connecting'>>({});
 
   const showToast = (msg: string, type: 'success'|'error' = 'success') => {
     setToast({ msg, type });
@@ -125,19 +168,28 @@ export default function App() {
   };
 
   const fetchData = useCallback(async () => {
-    if (!localStorage.getItem('sessionId') && process.env.NODE_ENV !== 'development') return;
+    if (!localStorage.getItem('sessionId') && !isDev) return;
+    
+    // 1. Fetch Fields
     try {
-      // Fetch ALL fields for settings
       const rpcRes = await apiCall({
         fid: 'queryFields',
         fields: Object.keys(MOCK_DATA).reduce((acc, key) => ({ ...acc, [key]: '' }), {})
       });
-      
       if (rpcRes && rpcRes.fields) {
         setData((prev: any) => ({ ...prev, ...rpcRes.fields }));
+        setIsInitialLoading(false);
       }
+    } catch (e) {
+      console.warn('queryFields failed', e);
+      if (isDev && isInitialLoading) {
+        setData(MOCK_DATA);
+        setIsInitialLoading(false);
+      }
+    }
 
-      // Fetch APN configs specifically
+    // 2. Fetch APN
+    try {
       const apnRes = await apiCall({ fid: 'queryApn', fields: {} });
       if (apnRes && apnRes.apnConfigs) {
          setData((prev: any) => ({ 
@@ -147,24 +199,28 @@ export default function App() {
            apnMode: apnRes.apnMode 
          }));
       }
+    } catch (e) {
+      console.warn('queryApn failed', e);
+    }
 
-      // Fetch COPS data for dashboard
+    // 3. Fetch COPS
+    try {
       const copsStr = await execAtCmd('AT+COPS?');
       if (copsStr) {
         const match = copsStr.match(/\+COPS:\s*(.*)/);
         if (match) {
-          const parsedStr = match[1];
+          const parsedStr = match[1].trim();
           setCopsData('+COPS: ' + parsedStr);
           const mode = parsedStr.split(',')[0];
           setIsAutoMode(mode === '0');
+        } else {
+          setCopsData(copsStr.trim());
         }
       }
     } catch (e) {
-      if (process.env.NODE_ENV === 'development') {
-        // Fallback to mock data silently in dev
-      }
+      console.warn('AT+COPS? failed', e);
     }
-  }, []);
+  }, [isInitialLoading]);
 
   useEffect(() => {
     const handleAuthError = () => setSessionId(null);
@@ -201,7 +257,7 @@ export default function App() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (loginPassword.length < 3 || loginPassword.length > 20) {
-      setLoginError('Password must be 3-20 characters');
+      setLoginError('Пароль должен содержать от 3 до 20 символов');
       return;
     }
     setIsLoggingIn(true);
@@ -210,24 +266,24 @@ export default function App() {
       const res = await apiCall({
         fid: 'login',
         password: loginPassword
-      }, 2000);
+      }, 10000); // Increased timeout to 10s
       if (res.reply === 'ok' || res.session || res.sessionId) {
         const newSid = res.session || res.sessionId;
         localStorage.setItem('sessionId', newSid);
         setSessionId(newSid);
         setLoginPassword('');
       } else if (res.reply === 'password_error') {
-        setLoginError('Invalid password');
+        setLoginError('Неверный пароль');
       } else {
-        setLoginError(res.reply || 'Login failed');
+        setLoginError(res.reply || 'Ошибка входа');
       }
-    } catch (e) {
-      setLoginError('Network error');
+    } catch (e: any) {
+      setLoginError(e.message === 'Empty response' ? 'Пустой ответ от роутера' : 'Ошибка сети');
     }
     setIsLoggingIn(false);
   };
 
-  if (!sessionId && process.env.NODE_ENV !== 'development') {
+  if (!sessionId && !isDev) {
     return (
       <div className="min-h-screen bg-[#0A0A0C] text-white flex items-center justify-center p-6 font-sans">
         <div className="w-full max-w-sm bg-zinc-900/50 border border-white/5 rounded-3xl p-8 shadow-2xl">
@@ -236,8 +292,8 @@ export default function App() {
               <Lock className="w-8 h-8 text-emerald-400" />
             </div>
           </div>
-          <h1 className="text-2xl font-semibold text-center mb-2">CPE Router</h1>
-          <p className="text-zinc-500 text-sm text-center mb-8">Enter admin password to continue</p>
+          <h1 className="text-2xl font-semibold text-center mb-2">CPE Роутер</h1>
+          <p className="text-zinc-500 text-sm text-center mb-8">Введите пароль администратора</p>
           
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
@@ -245,7 +301,7 @@ export default function App() {
                 type="password"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="Password"
+                placeholder="Пароль"
                 className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
@@ -255,7 +311,7 @@ export default function App() {
               disabled={isLoggingIn || !loginPassword}
               className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50 flex justify-center items-center"
             >
-              {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Login'}
+              {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Войти'}
             </button>
           </form>
         </div>
@@ -265,43 +321,81 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
   // --- Network Scan Logic ---
   useEffect(() => {
     let pollInterval: any;
+    let timeoutId: any;
+    let errorCount = 0;
+
     const checkScanStatus = async () => {
       try {
-        const res = await fetch('/cgi-bin/scan.cgi?action=status');
+        const sessionId = localStorage.getItem('sessionId');
+        const headers: Record<string, string> = { 'Accept': 'application/json' };
+        if (sessionId) headers['Authorization'] = sessionId;
+
+        const res = await fetch('/cgi-bin/scan.cgi?action=status', { headers });
+        if (!res.ok) throw new Error('Status check failed');
+        
         const json = await res.json();
+        errorCount = 0; // Reset on success
+        
         if (json.status === 'done') {
           setScanStatus('done');
-          clearInterval(pollInterval);
-          parseOperators(json.data);
+          parseOperators(json.data || '');
         } else if (json.status === 'error') {
           setScanStatus('error');
-          clearInterval(pollInterval);
-        } else if (json.status === 'scanning') {
-          setScanStatus('scanning');
+          showToast('Ошибка модема при поиске', 'error');
         }
       } catch (e) {
+        errorCount++;
         console.warn('Scan status check failed', e);
+        if (errorCount > 5) {
+          setScanStatus('error');
+          showToast('Потеряна связь с роутером при поиске', 'error');
+        }
       }
     };
-    if (scanStatus === 'scanning') pollInterval = setInterval(checkScanStatus, 3000);
-    return () => clearInterval(pollInterval);
+
+    if (scanStatus === 'scanning') {
+      pollInterval = setInterval(checkScanStatus, 3000);
+      timeoutId = setTimeout(() => {
+        if (scanStatus === 'scanning') {
+          setScanStatus('error');
+          showToast('Превышено время ожидания (3 мин)', 'error');
+        }
+      }, 180000);
+    }
+
+    return () => {
+      clearInterval(pollInterval);
+      clearTimeout(timeoutId);
+    };
   }, [scanStatus]);
 
   const parseOperators = (rawData: string) => {
+    // Очистка от префикса +COPS: если он есть
+    const cleanData = rawData.includes('+COPS:') ? rawData.split('+COPS:')[1] : rawData;
+    
     const regex = /\((\d+),"([^"]*)","([^"]*)","([^"]*)"(?:,(\d+))?\)/g;
     const ops = [];
     let match;
-    while ((match = regex.exec(rawData)) !== null) {
-      ops.push({ status: match[1], longName: match[2], shortName: match[3], numeric: match[4], act: match[5] || '0' });
+    while ((match = regex.exec(cleanData)) !== null) {
+      const numeric = match[4];
+      const longName = match[2] || MCC_MNC_MAP[numeric] || numeric;
+      ops.push({ 
+        status: match[1], 
+        longName: longName, 
+        shortName: match[3] || longName, 
+        numeric: numeric, 
+        act: match[5] || '0' 
+      });
     }
-    if (ops.length === 0) {
+    
+    if (ops.length === 0 && (isDev || rawData === '')) {
       ops.push(
         { status: '2', longName: 'MTS RUS', shortName: 'MTS', numeric: '25001', act: '7' },
         { status: '1', longName: 'Beeline', shortName: 'Beeline', numeric: '25099', act: '7' },
@@ -314,23 +408,62 @@ export default function App() {
   const startScan = async () => {
     setScanStatus('scanning');
     setOperators([]);
+    
     try {
-      await fetch('/cgi-bin/scan.cgi?action=start');
-      if (process.env.NODE_ENV === 'development') {
-        setTimeout(() => { setScanStatus('done'); parseOperators(''); }, 5000);
-      }
-    } catch (e) {
+      // Call logout before scan as requested by user
+      await apiCall({ fid: 'logout', fields: {} });
+      localStorage.removeItem('sessionId');
+      
+      const headers: Record<string, string> = {};
+      // No sessionId in headers now
+      
+      await fetch('/cgi-bin/scan.cgi?action=start', { headers });
+      showToast('Поиск запущен');
+    } catch (err) {
       setScanStatus('error');
+      showToast('Не удалось запустить поиск', 'error');
     }
   };
 
   const connectToOperator = async (numeric: string) => {
     setConnectingTo(numeric);
+    setConnectionResults(prev => ({ ...prev, [numeric]: 'connecting' }));
+    
     try {
+      // Отправка команды подключения
       await execAtCmd(`AT+COPS=1,2,"${numeric}"`);
-      setTimeout(() => { fetchData(); setConnectingTo(null); }, 3000);
+      
+      // Опрос статуса (проверка AT+COPS? каждые 3с, до 5 раз)
+      let attempts = 0;
+      const checkStatus = async () => {
+        attempts++;
+        try {
+          const res = await apiCall({ fid: 'terminal', fields: { command: 'AT+COPS?' } });
+          const output = res.reply || '';
+          
+          if (output.includes(`"${numeric}"`)) {
+            setConnectionResults(prev => ({ ...prev, [numeric]: 'success' }));
+            setConnectingTo(null);
+            fetchData();
+            showToast('Подключено успешно', 'success');
+          } else if (attempts < 5) {
+            setTimeout(checkStatus, 3000);
+          } else {
+            setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
+            setConnectingTo(null);
+            showToast('Не удалось подключиться к сети', 'error');
+          }
+        } catch (e) {
+          setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
+          setConnectingTo(null);
+        }
+      };
+      
+      setTimeout(checkStatus, 3000);
     } catch (e) {
+      setConnectionResults(prev => ({ ...prev, [numeric]: 'error' }));
       setConnectingTo(null);
+      showToast('Ошибка при отправке команды', 'error');
     }
   };
 
@@ -344,14 +477,18 @@ export default function App() {
   };
 
   const toggleAutoMode = async (enableAuto: boolean) => {
-    setIsAutoMode(enableAuto);
-    try {
-      await execAtCmd(enableAuto ? 'AT+COPS=0' : 'AT+COPS=2');
-      showToast(`Switched to ${enableAuto ? 'Automatic' : 'Manual'} mode`);
-      setTimeout(fetchData, 2000);
-    } catch (e) {
-      showToast('Failed to change mode', 'error');
-      fetchData();
+    if (enableAuto) {
+      setIsAutoMode(true);
+      try {
+        await execAtCmd('AT+COPS=0');
+        showToast('Включен автоматический выбор сети');
+        setTimeout(fetchData, 2000);
+      } catch (e) {
+        showToast('Ошибка при смене режима', 'error');
+        fetchData();
+      }
+    } else {
+      showToast('Выберите сеть из списка ниже для ручного подключения', 'error');
     }
   };
 
@@ -360,30 +497,31 @@ export default function App() {
     try {
       const res = await apiCall({ fid, fields }, timeoutMs);
       if (res.reply === 'ok' || res.reply === 'success') {
-        showToast('Settings saved successfully');
+        showToast('Настройки успешно сохранены');
         fetchData();
       } else {
-        showToast(res.reply || 'Failed to save', 'error');
+        showToast(res.reply || 'Не удалось сохранить', 'error');
       }
     } catch (e) {
-      showToast('Error saving settings', 'error');
+      showToast('Ошибка при сохранении настроек', 'error');
     }
   };
 
   const handleSystemAction = async (fid: string, fields: any = {}) => {
     if (fid === 'rebootSystem' || fid === 'factoryReset') {
-      if (!window.confirm(`Are you sure you want to execute: ${fid}?`)) return;
+      const msg = fid === 'rebootSystem' ? 'Вы уверены, что хотите перезагрузить устройство?' : 'Вы уверены, что хотите сбросить настройки до заводских?';
+      if (!window.confirm(msg)) return;
     }
     try {
       const res = await apiCall({ fid, fields });
       if (res.reply === 'ok' || res.reply === 'success') {
-        showToast('Action executed successfully');
+        showToast('Действие выполнено успешно');
         fetchData();
       } else {
-        showToast(res.reply || 'Action failed', 'error');
+        showToast(res.reply || 'Ошибка выполнения', 'error');
       }
     } catch (e) {
-      showToast('Action failed', 'error');
+      showToast('Ошибка выполнения', 'error');
     }
   };
 
@@ -396,7 +534,31 @@ export default function App() {
   };
 
   const isConnected = data.internetState === 'connected';
-  const networkModeStr = data.netWorkMode == 11 ? '4G LTE' : data.netWorkMode == 2 ? '3G' : 'Auto';
+  const networkModeStr = data.netWorkMode == 11 ? '4G LTE' : data.netWorkMode == 2 ? '3G' : 'Авто';
+
+  // Получаем реального оператора из AT+COPS?
+  const getConnectedOperator = () => {
+    // Формат: +COPS: <mode>,<format>,"<operator>",<act>
+    const match = copsData.match(/\+COPS: \d,\d,"([^"]+)"/);
+    if (match && match[1]) {
+      const op = match[1];
+      // Если это цифры и они есть в нашем справочнике - возвращаем имя
+      if (/^\d+$/.test(op) && MCC_MNC_MAP[op]) {
+        return MCC_MNC_MAP[op];
+      }
+      // Если цифры, но нет в базе - возвращаем как есть
+      if (/^\d+$/.test(op)) return op;
+      return op;
+    }
+    
+    // Если в COPS пусто или 0, значит регистрации нет
+    if (copsData.includes('+COPS: 0')) return 'Нет сети';
+    
+    // Фолбэк на данные из SIM, если COPS еще не прогрузился
+    return data.carrier || 'Поиск...';
+  };
+
+  const connectedOp = getConnectedOperator();
 
   return (
     <div className="min-h-screen bg-[#0A0A0C] text-white font-sans selection:bg-emerald-500/30 pb-24">
@@ -420,8 +582,10 @@ export default function App() {
       {/* Header */}
       <header className="pt-12 pb-6 px-6 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent sticky top-0 z-10 backdrop-blur-md">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">CPE Router</h1>
-          <p className="text-xs text-zinc-500 font-mono mt-1">{data.wanIpAddress || data.ipAddress}</p>
+          <h1 className="text-2xl font-semibold tracking-tight">CPE Роутер</h1>
+          <p className="text-[10px] text-zinc-500 font-mono mt-1">
+            {data.internetState === 'connected' ? `WAN IP: ${data.wanIpAddress}` : `LAN IP: ${data.ipAddress}`}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex flex-col items-end">
@@ -450,26 +614,47 @@ export default function App() {
                   }`}
                 >
                   <Power className={`w-16 h-16 mb-2 ${isConnected ? 'text-emerald-50' : 'text-red-50'}`} strokeWidth={1.5} />
-                  <span className="text-sm font-semibold tracking-wider uppercase text-white/90">{isConnected ? 'Online' : 'Offline'}</span>
+                  <span className="text-sm font-semibold tracking-wider uppercase text-white/90">{isConnected ? 'В сети' : 'Не в сети'}</span>
                 </motion.button>
               </div>
 
               <div className="w-full bg-zinc-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-6 shadow-xl">
                 <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-widest">Network Status</h2>
+                  <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-widest">Статус сети</h2>
                   <Activity className="w-4 h-4 text-zinc-500" />
                 </div>
-                <div className="space-y-4">
-                  <div>
-                    <p className="text-xs text-zinc-500 mb-1">Carrier</p>
-                    <p className="text-xl font-medium text-zinc-100">{data.carrier || 'Searching...'}</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-black/20 rounded-2xl p-4 border border-white/5">
+                    <p className="text-[10px] text-zinc-500 uppercase mb-1">Сеть (PLMN)</p>
+                    {isInitialLoading ? (
+                      <div className="h-4 w-20 bg-zinc-800 animate-pulse rounded mt-1" />
+                    ) : (
+                      <p className="text-sm font-semibold text-zinc-100 truncate">{connectedOp}</p>
+                    )}
                   </div>
-                  <div className="h-px w-full bg-white/5" />
-                  <div>
-                    <p className="text-xs text-zinc-500 mb-1">AT+COPS?</p>
-                    <div className="bg-black/50 rounded-lg p-3 font-mono text-xs text-emerald-400 border border-white/5 overflow-x-auto whitespace-nowrap">
-                      {copsData}
-                    </div>
+                  <div className="bg-black/20 rounded-2xl p-4 border border-white/5">
+                    <p className="text-[10px] text-zinc-500 uppercase mb-1">Режим</p>
+                    {isInitialLoading ? (
+                      <div className="h-4 w-12 bg-zinc-800 animate-pulse rounded mt-1" />
+                    ) : (
+                      <p className="text-sm font-semibold text-zinc-100">{networkModeStr}</p>
+                    )}
+                  </div>
+                  <div className="bg-black/20 rounded-2xl p-4 border border-white/5">
+                    <p className="text-[10px] text-zinc-500 uppercase mb-1">Сигнал</p>
+                    {isInitialLoading ? (
+                      <div className="h-4 w-16 bg-zinc-800 animate-pulse rounded mt-1" />
+                    ) : (
+                      <p className="text-sm font-semibold text-zinc-100">{data.signalStrength} dBm</p>
+                    )}
+                  </div>
+                  <div className="bg-black/20 rounded-2xl p-4 border border-white/5">
+                    <p className="text-[10px] text-zinc-500 uppercase mb-1">WAN IP</p>
+                    {isInitialLoading ? (
+                      <div className="h-4 w-24 bg-zinc-800 animate-pulse rounded mt-1" />
+                    ) : (
+                      <p className="text-sm font-semibold text-emerald-400 truncate">{data.wanIpAddress || '-'}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -479,12 +664,12 @@ export default function App() {
           {/* NETWORK SCAN TAB */}
           {activeTab === 'network' && (
             <motion.div key="network" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="mt-6">
-              <h2 className="text-2xl font-semibold mb-6">Network Scan</h2>
+              <h2 className="text-2xl font-semibold mb-6">Поиск сети</h2>
 
               <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-4 mb-6 flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-medium text-zinc-200">Network Selection</h3>
-                  <p className="text-xs text-zinc-500 mt-0.5">{isAutoMode ? 'Automatic Mode' : 'Manual Mode'}</p>
+                  <h3 className="text-sm font-medium text-zinc-200">Выбор сети</h3>
+                  <p className="text-xs text-zinc-500 mt-0.5">{isAutoMode ? 'Автоматический режим' : 'Ручной режим'}</p>
                 </div>
                 <button 
                   onClick={() => toggleAutoMode(!isAutoMode)}
@@ -500,35 +685,62 @@ export default function App() {
               {scanStatus === 'idle' || scanStatus === 'error' ? (
                 <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6 text-center">
                   <Search className="w-12 h-12 text-zinc-500 mx-auto mb-4" />
-                  <p className="text-zinc-400 text-sm mb-6">Scan for available mobile networks using AT+COPS=?</p>
-                  {scanStatus === 'error' && <p className="text-red-400 text-xs mb-4">An error occurred during the last scan.</p>}
-                  <button onClick={startScan} className="bg-white text-black px-6 py-3 rounded-full font-medium text-sm w-full hover:bg-zinc-200 transition-colors">Start Scan</button>
+                  <p className="text-zinc-400 text-sm mb-6">Поиск доступных мобильных сетей (AT+COPS=?)</p>
+                  {scanStatus === 'error' && <p className="text-red-400 text-xs mb-4">Произошла ошибка при последнем поиске.</p>}
+                  <button onClick={startScan} className="bg-white text-black px-6 py-3 rounded-full font-medium text-sm w-full hover:bg-zinc-200 transition-colors">Начать поиск</button>
                 </div>
               ) : scanStatus === 'scanning' ? (
                 <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-8 text-center flex flex-col items-center">
                   <Loader2 className="w-12 h-12 text-emerald-500 animate-spin mb-4" />
-                  <p className="text-zinc-300 font-medium">Scanning Networks...</p>
-                  <p className="text-zinc-500 text-xs mt-2">This may take up to 3 minutes.</p>
+                  <p className="text-zinc-300 font-medium">Поиск сетей...</p>
+                  <p className="text-zinc-500 text-xs mt-2">Это может занять до 3 минут.</p>
+                  <button 
+                    onClick={() => setScanStatus('idle')}
+                    className="mt-6 text-xs text-zinc-500 hover:text-zinc-300 underline underline-offset-4"
+                  >
+                    Остановить ожидание
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-4">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm text-zinc-400">Available Networks</span>
-                    <button onClick={startScan} className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Rescan</button>
+                    <span className="text-sm text-zinc-400">Доступные сети</span>
+                    <button onClick={startScan} className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Обновить</button>
                   </div>
                   {operators.map((op, idx) => (
                     <div key={idx} className="bg-zinc-900/50 border border-white/5 rounded-2xl p-4 flex items-center justify-between">
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-zinc-100">{op.longName}</span>
-                          {op.status === '2' && <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">Current</span>}
-                          {op.status === '3' && <span className="bg-red-500/20 text-red-400 text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">Forbidden</span>}
+                          {op.status === '2' && <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">Текущая</span>}
+                          {op.status === '3' && <span className="bg-red-500/20 text-red-400 text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">Запрещена</span>}
                         </div>
-                        <p className="text-xs text-zinc-500 font-mono mt-1">{op.numeric} • Act: {op.act}</p>
+                        <p className="text-xs text-zinc-500 font-mono mt-1">{op.numeric} • Тип: {op.act}</p>
                       </div>
                       {op.status !== '2' && op.status !== '3' && (
-                        <button onClick={() => connectToOperator(op.numeric)} disabled={connectingTo === op.numeric} className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-full text-xs font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
-                          {connectingTo === op.numeric ? <Loader2 className="w-3 h-3 animate-spin" /> : null} Connect
+                        <button 
+                          onClick={() => connectToOperator(op.numeric)} 
+                          disabled={connectingTo === op.numeric} 
+                          className={`px-4 py-2 rounded-full text-xs font-medium transition-all flex items-center gap-2 ${
+                            connectionResults[op.numeric] === 'success' 
+                              ? 'bg-emerald-500 text-white' 
+                              : connectionResults[op.numeric] === 'error'
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                                : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                        >
+                          {connectingTo === op.numeric ? (
+                            <>
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              Подключение...
+                            </>
+                          ) : connectionResults[op.numeric] === 'success' ? (
+                            'Подключено'
+                          ) : connectionResults[op.numeric] === 'error' ? (
+                            'Повторить'
+                          ) : (
+                            'Подключить'
+                          )}
                         </button>
                       )}
                       {op.status === '2' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
@@ -542,11 +754,11 @@ export default function App() {
           {/* TERMINAL TAB */}
           {activeTab === 'terminal' && (
             <motion.div key="terminal" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="mt-6">
-              <h2 className="text-2xl font-semibold mb-6">Engineering Terminal</h2>
+              <h2 className="text-2xl font-semibold mb-6">Инженерный терминал</h2>
               
               {/* Band Management */}
               <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6 mb-6">
-                <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Signal className="w-4 h-4 text-emerald-400"/> Band Management</h3>
+                <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Signal className="w-4 h-4 text-emerald-400"/> Управление диапазонами (Bands)</h3>
                 <div className="flex flex-wrap gap-4 mb-6">
                   {['0x1|B1 (2100)', '0x4|B3 (1800)', '0x40|B7 (2600)', '0x80000|B20 (800)'].map(b => {
                     const [val, label] = b.split('|');
@@ -558,11 +770,11 @@ export default function App() {
                     );
                   })}
                 </div>
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
                   <button onClick={async () => {
                     let mask = 0;
                     document.querySelectorAll('input[id^="band-"]:checked').forEach((el: any) => { mask |= parseInt(el.value, 16); });
-                    if (mask === 0) { showToast('Select at least one band', 'error'); return; }
+                    if (mask === 0) { showToast('Выберите хотя бы один диапазон', 'error'); return; }
                     const hexMask = mask.toString(16).toUpperCase();
                     const cmd = `AT+QCFG="band",0,${hexMask},1`;
                     const out = document.getElementById('at-out');
@@ -571,9 +783,9 @@ export default function App() {
                       const res = await execAtCmd(cmd);
                       if (out) { out.innerText += `\n${res}`; out.scrollTop = out.scrollHeight; }
                     } catch (e: any) {
-                      if (out) { out.innerText += `\n[Error]: ${e.message}`; out.scrollTop = out.scrollHeight; }
+                      if (out) { out.innerText += `\n[Ошибка]: ${e.message}`; out.scrollTop = out.scrollHeight; }
                     }
-                  }} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">Apply Selected</button>
+                  }} className="flex-1 min-w-[140px] bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors shadow-lg shadow-emerald-500/20">Применить</button>
                   <button onClick={async () => {
                     const cmd = 'AT+QCFG="band"';
                     const out = document.getElementById('at-out');
@@ -582,44 +794,46 @@ export default function App() {
                       const res = await execAtCmd(cmd);
                       if (out) { out.innerText += `\n${res}`; out.scrollTop = out.scrollHeight; }
                     } catch (e: any) {
-                      if (out) { out.innerText += `\n[Error]: ${e.message}`; out.scrollTop = out.scrollHeight; }
+                      if (out) { out.innerText += `\n[Ошибка]: ${e.message}`; out.scrollTop = out.scrollHeight; }
                     }
-                  }} className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">Refresh Current</button>
+                  }} className="flex-1 min-w-[140px] bg-zinc-800 hover:bg-zinc-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition-colors">Текущие конфиги</button>
                 </div>
               </div>
 
               {/* AT Terminal */}
               <div className="bg-zinc-900/50 border border-white/5 rounded-3xl p-6">
-                <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Terminal className="w-4 h-4 text-emerald-400"/> AT Commands</h3>
-                <div className="flex gap-2 mb-4">
-                  <input type="text" id="at-in" placeholder="AT+CSQ" className="flex-1 bg-black/50 border border-white/10 rounded-xl px-4 py-2 text-white placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 font-mono text-sm" onKeyDown={(e) => {
+                <h3 className="text-sm font-medium text-zinc-200 mb-4 flex items-center gap-2"><Terminal className="w-4 h-4 text-emerald-400"/> AT-Команды</h3>
+                <div className="space-y-3 mb-4">
+                  <input type="text" id="at-in" placeholder="AT+CSQ" className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-white placeholder:text-zinc-600 focus:outline-none focus:border-emerald-500 font-mono text-sm transition-all" onKeyDown={(e) => {
                     if (e.key === 'Enter') document.getElementById('btn-send-at')?.click();
                   }} />
-                  <button id="btn-send-at" onClick={async () => {
-                    const inp = document.getElementById('at-in') as HTMLInputElement;
-                    const out = document.getElementById('at-out');
-                    const cmd = inp.value;
-                    if (!cmd || !out) return;
-                    out.innerText += `\n>>> ${cmd}`;
-                    inp.value = '';
-                    try {
-                      const res = await execAtCmd(cmd);
-                      out.innerText += `\n${res}`;
-                    } catch (e: any) {
-                      out.innerText += `\n[Error]: ${e.message}`;
-                    }
-                    out.scrollTop = out.scrollHeight;
-                  }} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-medium transition-colors">SEND</button>
-                  <button onClick={async () => {
-                    try {
-                      await fetch('/cgi-bin/api', { method: 'POST', body: JSON.stringify({ action: "kill_at" }) });
+                  <div className="flex gap-2">
+                    <button id="btn-send-at" onClick={async () => {
+                      const inp = document.getElementById('at-in') as HTMLInputElement;
                       const out = document.getElementById('at-out');
-                      if (out) { out.innerText += '\n[SYSTEM]: OK (CAT Killed)'; out.scrollTop = out.scrollHeight; }
-                    } catch (e) {}
-                  }} className="bg-red-500/20 text-red-400 hover:bg-red-500/30 px-4 py-2 rounded-xl text-sm font-medium transition-colors">KILL</button>
+                      const cmd = inp.value;
+                      if (!cmd || !out) return;
+                      out.innerText += `\n>>> ${cmd}`;
+                      inp.value = '';
+                      try {
+                        const res = await execAtCmd(cmd);
+                        out.innerText += `\n${res}`;
+                      } catch (e: any) {
+                        out.innerText += `\n[Ошибка]: ${e.message}`;
+                      }
+                      out.scrollTop = out.scrollHeight;
+                    }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95">ОТПРАВИТЬ</button>
+                    <button onClick={async () => {
+                      try {
+                        await apiCall({ action: "kill_at" });
+                        const out = document.getElementById('at-out');
+                        if (out) { out.innerText += '\n[СИСТЕМА]: OK (CAT Killed)'; out.scrollTop = out.scrollHeight; }
+                      } catch (e) {}
+                    }} className="px-6 bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 py-3 rounded-xl text-xs font-bold uppercase tracking-wider transition-all active:scale-95">СБРОС</button>
+                  </div>
                 </div>
                 <div id="at-out" className="bg-[#0A0A0C] border border-white/5 rounded-xl p-4 h-64 overflow-y-auto font-mono text-xs text-emerald-400 whitespace-pre-wrap">
-                  {'> Ready.'}
+                  {'> Готов.'}
                 </div>
               </div>
             </motion.div>
@@ -631,16 +845,16 @@ export default function App() {
               <AnimatePresence mode="wait">
                 {!activeSettingsPage ? (
                   <motion.div key="menu" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                    <h2 className="text-2xl font-semibold mb-6">Settings</h2>
+                    <h2 className="text-2xl font-semibold mb-6">Настройки</h2>
                     <div className="bg-zinc-900/50 border border-white/5 rounded-3xl overflow-hidden divide-y divide-white/5">
-                      <SettingsMenuItem icon={<Globe className="text-purple-400" />} label="Mobile Network & APN" onClick={() => setActiveSettingsPage('mobile')} />
-                      <SettingsMenuItem icon={<Wifi className="text-blue-400" />} label="Wi-Fi Settings" onClick={() => setActiveSettingsPage('wifi')} />
-                      <SettingsMenuItem icon={<Server className="text-emerald-400" />} label="LAN & DHCP" onClick={() => setActiveSettingsPage('lan')} />
-                      <SettingsMenuItem icon={<Users className="text-pink-400" />} label="Connected Devices" onClick={() => setActiveSettingsPage('devices')} />
-                      <SettingsMenuItem icon={<Smartphone className="text-orange-400" />} label="SIM Management" onClick={() => setActiveSettingsPage('sim')} />
-                      <SettingsMenuItem icon={<ShieldAlert className="text-yellow-400" />} label="Watchdog (Ping Test)" onClick={() => setActiveSettingsPage('watchdog')} />
-                      <SettingsMenuItem icon={<HardDrive className="text-zinc-400" />} label="System & Info" onClick={() => setActiveSettingsPage('system')} />
-                      <SettingsMenuItem icon={<Power className="text-red-400" />} label="Logout" onClick={() => {
+                      <SettingsMenuItem icon={<Globe className="text-purple-400" />} label="Мобильная сеть и APN" onClick={() => setActiveSettingsPage('mobile')} />
+                      <SettingsMenuItem icon={<Wifi className="text-blue-400" />} label="Настройки Wi-Fi" onClick={() => setActiveSettingsPage('wifi')} />
+                      <SettingsMenuItem icon={<Server className="text-emerald-400" />} label="LAN и DHCP" onClick={() => setActiveSettingsPage('lan')} />
+                      <SettingsMenuItem icon={<Users className="text-pink-400" />} label="Подключенные устройства" onClick={() => setActiveSettingsPage('devices')} />
+                      <SettingsMenuItem icon={<Smartphone className="text-orange-400" />} label="Управление SIM" onClick={() => setActiveSettingsPage('sim')} />
+                      <SettingsMenuItem icon={<ShieldAlert className="text-yellow-400" />} label="Watchdog (Пинг-тест)" onClick={() => setActiveSettingsPage('watchdog')} />
+                      <SettingsMenuItem icon={<HardDrive className="text-zinc-400" />} label="Система и Информация" onClick={() => setActiveSettingsPage('system')} />
+                      <SettingsMenuItem icon={<Power className="text-red-400" />} label="Выйти" onClick={() => {
                         apiCall({ fid: 'logout', fields: {} }).catch(() => {});
                         localStorage.removeItem('sessionId');
                         setSessionId(null);
@@ -655,6 +869,7 @@ export default function App() {
                     onBack={() => setActiveSettingsPage(null)} 
                     onSave={handleSaveSettings}
                     onSystemAction={handleSystemAction}
+                    showToast={showToast}
                   />
                 )}
               </AnimatePresence>
@@ -666,10 +881,10 @@ export default function App() {
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 bg-black/90 backdrop-blur-xl border-t border-white/10 pb-safe pt-2 px-6 z-50">
         <div className="flex justify-around items-center pb-4">
-          <NavItem icon={<Globe />} label="Dashboard" isActive={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); setActiveSettingsPage(null); }} />
-          <NavItem icon={<Signal />} label="Network" isActive={activeTab === 'network'} onClick={() => { setActiveTab('network'); setActiveSettingsPage(null); }} />
-          <NavItem icon={<Terminal />} label="Terminal" isActive={activeTab === 'terminal'} onClick={() => { setActiveTab('terminal'); setActiveSettingsPage(null); }} />
-          <NavItem icon={<Settings />} label="Settings" isActive={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+          <NavItem icon={<Globe />} label="Главная" isActive={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); setActiveSettingsPage(null); }} />
+          <NavItem icon={<Signal />} label="Сеть" isActive={activeTab === 'network'} onClick={() => { setActiveTab('network'); setActiveSettingsPage(null); }} />
+          <NavItem icon={<Terminal />} label="Терминал" isActive={activeTab === 'terminal'} onClick={() => { setActiveTab('terminal'); setActiveSettingsPage(null); }} />
+          <NavItem icon={<Settings />} label="Настройки" isActive={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
         </div>
       </nav>
     </div>
@@ -703,7 +918,7 @@ function SettingsMenuItem({ icon, label, onClick }: { icon: React.ReactNode, lab
 
 // --- Settings Sub-Pages ---
 
-function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?: string, page: string, data: any, onBack: () => void, onSave: (fid: string, fields: any, timeoutMs?: number) => void, onSystemAction: (fid: string, fields?: any) => void }) {
+function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast }: { key?: string, page: string, data: any, onBack: () => void, onSave: (fid: string, fields: any, timeoutMs?: number) => void, onSystemAction: (fid: string, fields?: any) => void, showToast: (msg: string, type?: 'success'|'error') => void }) {
   const [formData, setFormData] = useState<any>({});
   const [isSaving, setIsSaving] = useState(false);
   const [editingApn, setEditingApn] = useState<any>(null); // null = list, {} = new, {...} = edit
@@ -726,11 +941,11 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
       fid = 'setWifi';
       timeoutMs = 20000;
       if (formData.ssidName?.length < 5 || formData.ssidName?.length > 32) {
-        showToast('SSID must be 5-32 characters', 'error');
+        showToast('Имя сети (SSID) должно быть от 5 до 32 символов', 'error');
         setIsSaving(false); return;
       }
       if (formData.ssidSecureMode !== 'NONE' && (formData.ssidPassword?.length < 8 || formData.ssidPassword?.length > 63)) {
-        showToast('Wi-Fi password must be 8-63 characters', 'error');
+        showToast('Пароль Wi-Fi должен быть от 8 до 63 символов', 'error');
         setIsSaving(false); return;
       }
       fieldsToSave = {
@@ -767,7 +982,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
       fieldsToSave = { simCardCurrent: parseInt(formData.simCardCurrent) };
       if (data.simCardSwitchCheck) {
         if (!formData.simPassword) {
-          showToast('SIM switch requires password', 'error');
+          showToast('Для переключения SIM требуется пароль', 'error');
           setIsSaving(false); return;
         }
         fieldsToSave.password = formData.simPassword;
@@ -825,17 +1040,17 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
   };
 
   const titles: Record<string, string> = {
-    wifi: 'Wi-Fi Settings', lan: 'LAN & DHCP', mobile: 'Mobile & APN',
-    sim: 'SIM Management', watchdog: 'Watchdog', system: 'System & Info', devices: 'Connected Devices'
+    wifi: 'Настройки Wi-Fi', lan: 'LAN и DHCP', mobile: 'Мобильная сеть и APN',
+    sim: 'Управление SIM', watchdog: 'Watchdog', system: 'Система и Информация', devices: 'Подключенные устройства'
   };
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-6">
         <button onClick={() => editingApn ? setEditingApn(null) : onBack()} className="p-2 -ml-2 text-zinc-400 hover:text-white flex items-center gap-1">
-          <ArrowLeft className="w-5 h-5" /> <span className="text-sm font-medium">Back</span>
+          <ArrowLeft className="w-5 h-5" /> <span className="text-sm font-medium">Назад</span>
         </button>
-        <h2 className="text-lg font-semibold">{editingApn ? 'Edit APN' : titles[page]}</h2>
+        <h2 className="text-lg font-semibold">{editingApn ? 'Редактировать APN' : titles[page]}</h2>
         {page !== 'devices' && !editingApn ? (
           <button onClick={handleSave} disabled={isSaving} className="p-2 -mr-2 text-emerald-400 hover:text-emerald-300 disabled:opacity-50">
             {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
@@ -854,19 +1069,19 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
               <div className="flex-1 bg-zinc-900/50 border border-white/5 rounded-2xl p-4 text-center">
                 <Wifi className="w-6 h-6 text-blue-400 mx-auto mb-2" />
                 <div className="text-2xl font-semibold">{data.deviceCounts?.wifiCount || 0}</div>
-                <div className="text-xs text-zinc-500">Wi-Fi Clients</div>
+                <div className="text-xs text-zinc-500">Wi-Fi клиенты</div>
               </div>
               <div className="flex-1 bg-zinc-900/50 border border-white/5 rounded-2xl p-4 text-center">
                 <Server className="w-6 h-6 text-emerald-400 mx-auto mb-2" />
                 <div className="text-2xl font-semibold">{data.deviceCounts?.ethCount || 0}</div>
-                <div className="text-xs text-zinc-500">LAN Clients</div>
+                <div className="text-xs text-zinc-500">LAN клиенты</div>
               </div>
             </div>
             
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-2xl p-4 mb-4 flex items-start gap-3">
               <ShieldAlert className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
               <p className="text-xs text-blue-200/70 leading-relaxed">
-                MAC filtering and blocking clients are not supported by the current router API firmware. You can only view connected devices.
+                Фильтрация по MAC и блокировка клиентов не поддерживаются текущей прошивкой. Вы можете только просматривать список подключенных устройств.
               </p>
             </div>
 
@@ -878,17 +1093,17 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
                       {dev.deviceType === 'wifi' ? <Wifi className="w-4 h-4 text-zinc-300" /> : <Server className="w-4 h-4 text-zinc-300" />}
                     </div>
                     <div>
-                      <div className="text-sm font-medium text-zinc-200">{dev.deviceName || 'Unknown Device'}</div>
+                      <div className="text-sm font-medium text-zinc-200">{dev.deviceName || 'Неизвестное устройство'}</div>
                       <div className="text-xs text-zinc-500 font-mono mt-0.5">{dev.deviceIp} • {dev.deviceAddress}</div>
                     </div>
                   </div>
                   <button disabled className="px-3 py-1.5 rounded-full bg-white/5 text-zinc-600 text-xs font-medium cursor-not-allowed">
-                    Block
+                    Блок
                   </button>
                 </div>
               ))}
               {(!data.deviceList || data.deviceList.length === 0) && (
-                <div className="text-center text-zinc-500 text-sm py-8">No devices connected.</div>
+                <div className="text-center text-zinc-500 text-sm py-8">Нет подключенных устройств.</div>
               )}
             </div>
           </>
@@ -896,21 +1111,21 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
 
         {page === 'wifi' && (
           <FormGroup>
-            <ToggleRow label="Enable Wi-Fi" value={toBool(formData.wifiApSwitch)} onChange={(v) => handleChange('wifiApSwitch', v)} />
-            <InputRow label="SSID Name" value={formData.ssidName} onChange={(v) => handleChange('ssidName', v)} />
-            <ToggleRow label="Broadcast SSID" value={toBool(formData.ssidBroadcast)} onChange={(v) => handleChange('ssidBroadcast', v)} />
-            <SelectRow label="Security" value={formData.ssidSecureMode} onChange={(v) => handleChange('ssidSecureMode', v)} options={[{l:'NONE', v:'NONE'}, {l:'WPA-PSK', v:'WPA_PSK'}, {l:'WPA2-PSK', v:'WPA2_PSK'}]} />
+            <ToggleRow label="Включить Wi-Fi" value={toBool(formData.wifiApSwitch)} onChange={(v) => handleChange('wifiApSwitch', v)} />
+            <InputRow label="Имя сети (SSID)" value={formData.ssidName} onChange={(v) => handleChange('ssidName', v)} />
+            <ToggleRow label="Транслировать SSID" value={toBool(formData.ssidBroadcast)} onChange={(v) => handleChange('ssidBroadcast', v)} />
+            <SelectRow label="Безопасность" value={formData.ssidSecureMode} onChange={(v) => handleChange('ssidSecureMode', v)} options={[{l:'NONE', v:'NONE'}, {l:'WPA-PSK', v:'WPA_PSK'}, {l:'WPA2-PSK', v:'WPA2_PSK'}]} />
             {formData.ssidSecureMode !== 'NONE' && (
-              <InputRow label="Password" value={formData.ssidPassword} onChange={(v) => handleChange('ssidPassword', v)} type="password" />
+              <InputRow label="Пароль" value={formData.ssidPassword} onChange={(v) => handleChange('ssidPassword', v)} type="password" />
             )}
-            <InputRow label="Max Users" value={formData.ssidMaxUserCount} onChange={(v) => handleChange('ssidMaxUserCount', v)} type="number" />
+            <InputRow label="Макс. пользователей" value={formData.ssidMaxUserCount} onChange={(v) => handleChange('ssidMaxUserCount', v)} type="number" />
             <SelectRow 
-              label="Wi-Fi Channel" 
+              label="Канал Wi-Fi" 
               value={(formData.channleType ?? formData.channelSelect)?.toString() || '0'} 
               onChange={(v) => handleChange('channleType', v)} 
               options={[
-                { l: 'Auto', v: '0' },
-                ...Array.from({ length: 13 }, (_, i) => ({ l: `Channel ${i + 1}`, v: `${i + 1}` }))
+                { l: 'Авто', v: '0' },
+                ...Array.from({ length: 13 }, (_, i) => ({ l: `Канал ${i + 1}`, v: `${i + 1}` }))
               ]} 
             />
           </FormGroup>
@@ -918,16 +1133,16 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
 
         {page === 'lan' && (
           <FormGroup>
-            <InputRow label="IP Address" value={formData.ipAddress} onChange={(v) => handleChange('ipAddress', v)} />
-            <InputRow label="Subnet Mask" value={formData.subnetMask} onChange={(v) => handleChange('subnetMask', v)} />
-            <SelectRow label="Port Type" value={formData.ethType} onChange={(v) => handleChange('ethType', v)} options={[{l:'LAN', v:'lan'}, {l:'WAN', v:'wan'}]} />
+            <InputRow label="IP-адрес" value={formData.ipAddress} onChange={(v) => handleChange('ipAddress', v)} />
+            <InputRow label="Маска подсети" value={formData.subnetMask} onChange={(v) => handleChange('subnetMask', v)} />
+            <SelectRow label="Тип порта" value={formData.ethType} onChange={(v) => handleChange('ethType', v)} options={[{l:'LAN', v:'lan'}, {l:'WAN', v:'wan'}]} />
             <div className="h-px bg-white/5 my-2" />
-            <ToggleRow label="Enable DHCP" value={toBool(formData.dhcpSwitch)} onChange={(v) => handleChange('dhcpSwitch', v)} />
+            <ToggleRow label="Включить DHCP" value={toBool(formData.dhcpSwitch)} onChange={(v) => handleChange('dhcpSwitch', v)} />
             {toBool(formData.dhcpSwitch) && (
               <>
-                <InputRow label="DHCP Start" value={formData.dhcpFrom} onChange={(v) => handleChange('dhcpFrom', v)} />
-                <InputRow label="DHCP End" value={formData.dhcpTo} onChange={(v) => handleChange('dhcpTo', v)} />
-                <InputRow label="Lease Time (h)" value={formData.dhcpLeases} onChange={(v) => handleChange('dhcpLeases', v)} type="number" />
+                <InputRow label="Начальный IP" value={formData.dhcpFrom} onChange={(v) => handleChange('dhcpFrom', v)} />
+                <InputRow label="Конечный IP" value={formData.dhcpTo} onChange={(v) => handleChange('dhcpTo', v)} />
+                <InputRow label="Время аренды (ч)" value={formData.dhcpLeases} onChange={(v) => handleChange('dhcpLeases', v)} type="number" />
               </>
             )}
           </FormGroup>
@@ -936,13 +1151,13 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
         {page === 'mobile' && !editingApn && (
           <>
             <FormGroup>
-              <SelectRow label="Network Mode" value={formData.netWorkMode?.toString()} onChange={(v) => handleChange('netWorkMode', v)} options={[{l:'Auto (3G/4G)', v:'12'}, {l:'4G LTE Only', v:'11'}, {l:'3G Only', v:'2'}]} />
-              <InputRow label="TTL Value" value={formData.ttl} onChange={(v) => handleChange('ttl', v)} type="number" />
+              <SelectRow label="Режим сети" value={formData.netWorkMode?.toString()} onChange={(v) => handleChange('netWorkMode', v)} options={[{l:'Авто (3G/4G)', v:'12'}, {l:'Только 4G LTE', v:'11'}, {l:'Только 3G', v:'2'}]} />
+              <InputRow label="Значение TTL" value={formData.ttl} onChange={(v) => handleChange('ttl', v)} type="number" />
             </FormGroup>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">APN Profiles</h3>
+            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Профили APN</h3>
             <FormGroup>
-              <SelectRow label="APN Mode" value={formData.apnMode} onChange={(v) => handleChange('apnMode', v)} options={[{l:'Auto', v:'auto'}, {l:'Manual', v:'manual'}]} />
+              <SelectRow label="Режим APN" value={formData.apnMode} onChange={(v) => handleChange('apnMode', v)} options={[{l:'Авто', v:'auto'}, {l:'Вручную', v:'manual'}]} />
             </FormGroup>
 
             {formData.apnMode === 'manual' && (
@@ -968,7 +1183,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
                   </div>
                 ))}
                 <button onClick={() => setEditingApn({})} className="w-full bg-white/5 border border-white/10 rounded-2xl p-4 flex items-center justify-center gap-2 text-zinc-300 hover:bg-white/10 transition-colors border-dashed">
-                  <Plus className="w-4 h-4" /> Add New APN
+                  <Plus className="w-4 h-4" /> Добавить новый APN
                 </button>
               </div>
             )}
@@ -977,34 +1192,34 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
 
         {page === 'mobile' && editingApn && (
           <FormGroup>
-            <InputRow label="Profile Name" value={editingApn.name} onChange={(v) => setEditingApn({...editingApn, name: v})} />
-            <SelectRow label="PDP Type" value={editingApn.pdpType || 'IPv4'} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPv4'}, {l:'IPv6', v:'IPv6'}, {l:'IPv4v6', v:'IPv4V6'}]} />
+            <InputRow label="Имя профиля" value={editingApn.name} onChange={(v) => setEditingApn({...editingApn, name: v})} />
+            <SelectRow label="Тип PDP" value={editingApn.pdpType || 'IPv4'} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPv4'}, {l:'IPv6', v:'IPv6'}, {l:'IPv4v6', v:'IPv4V6'}]} />
             <InputRow label="APN" value={editingApn.apn} onChange={(v) => setEditingApn({...editingApn, apn: v})} />
-            <InputRow label="Username" value={editingApn.apnUser} onChange={(v) => setEditingApn({...editingApn, apnUser: v})} />
-            <InputRow label="Password" value={editingApn.apnPassword} onChange={(v) => setEditingApn({...editingApn, apnPassword: v})} type="password" />
-            <SelectRow label="Auth Type" value={editingApn.authtype?.toString() || '0'} onChange={(v) => setEditingApn({...editingApn, authtype: v})} options={[{l:'None', v:'0'}, {l:'PAP', v:'1'}, {l:'CHAP', v:'2'}, {l:'PAP/CHAP', v:'3'}]} />
+            <InputRow label="Имя пользователя" value={editingApn.apnUser} onChange={(v) => setEditingApn({...editingApn, apnUser: v})} />
+            <InputRow label="Пароль" value={editingApn.apnPassword} onChange={(v) => setEditingApn({...editingApn, apnPassword: v})} type="password" />
+            <SelectRow label="Тип аутентификации" value={editingApn.authtype?.toString() || '0'} onChange={(v) => setEditingApn({...editingApn, authtype: v})} options={[{l:'Нет', v:'0'}, {l:'PAP', v:'1'}, {l:'CHAP', v:'2'}, {l:'PAP/CHAP', v:'3'}]} />
           </FormGroup>
         )}
 
         {page === 'sim' && (
           <FormGroup>
-            <InfoRow label="Total Slots" value={formData.simCardSlotCount} />
-            <SelectRow label="Active SIM" value={formData.simCardCurrent?.toString()} onChange={(v) => handleChange('simCardCurrent', v)} options={[{l:'SIM 1', v:'0'}, {l:'SIM 2', v:'1'}]} />
+            <InfoRow label="Всего слотов" value={formData.simCardSlotCount} />
+            <SelectRow label="Активная SIM" value={formData.simCardCurrent?.toString()} onChange={(v) => handleChange('simCardCurrent', v)} options={[{l:'SIM 1', v:'0'}, {l:'SIM 2', v:'1'}]} />
             {data.simCardSwitchCheck && (
-              <InputRow label="SIM Switch Password" value={formData.simPassword || ''} onChange={(v) => handleChange('simPassword', v)} type="password" />
+              <InputRow label="Пароль переключения SIM" value={formData.simPassword || ''} onChange={(v) => handleChange('simPassword', v)} type="password" />
             )}
           </FormGroup>
         )}
 
         {page === 'watchdog' && (
           <FormGroup>
-            <ToggleRow label="Enable Watchdog" value={toBool(formData.testConnect)} onChange={(v) => handleChange('testConnect', v)} />
+            <ToggleRow label="Включить Watchdog" value={toBool(formData.testConnect)} onChange={(v) => handleChange('testConnect', v)} />
             {toBool(formData.testConnect) && (
               <>
-                <InputRow label="Ping Address 1" value={formData.pingAddress1} onChange={(v) => handleChange('pingAddress1', v)} />
-                <InputRow label="Ping Address 2" value={formData.pingAddress2} onChange={(v) => handleChange('pingAddress2', v)} />
-                <InputRow label="Check Interval (s)" value={formData.testInterval} onChange={(v) => handleChange('testInterval', v)} type="number" />
-                <InputRow label="Max Failures" value={formData.testTimes} onChange={(v) => handleChange('testTimes', v)} type="number" />
+                <InputRow label="Адрес пинга 1" value={formData.pingAddress1} onChange={(v) => handleChange('pingAddress1', v)} />
+                <InputRow label="Адрес пинга 2" value={formData.pingAddress2} onChange={(v) => handleChange('pingAddress2', v)} />
+                <InputRow label="Интервал проверки (с)" value={formData.testInterval} onChange={(v) => handleChange('testInterval', v)} type="number" />
+                <InputRow label="Макс. неудач" value={formData.testTimes} onChange={(v) => handleChange('testTimes', v)} type="number" />
               </>
             )}
           </FormGroup>
@@ -1013,41 +1228,41 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction }: { key?:
         {page === 'system' && (
           <>
             <FormGroup>
-              <SelectRow label="Language" value={formData.language} onChange={(v) => handleChange('language', v)} options={[{l:'English', v:'en'}, {l:'Русский', v:'ru'}, {l:'Español', v:'es'}, {l:'中文', v:'zh'}]} />
-              <SelectRow label="USB Mode" value={formData.usbMode?.toString()} onChange={(v) => handleChange('usbMode', v)} options={[{l:'Network (RNDIS)', v:'0'}, {l:'File Transfer (MTP)', v:'1'}]} />
+              <SelectRow label="Язык" value={formData.language} onChange={(v) => handleChange('language', v)} options={[{l:'English', v:'en'}, {l:'Русский', v:'ru'}, {l:'Español', v:'es'}, {l:'中文', v:'zh'}]} />
+              <SelectRow label="Режим USB" value={formData.usbMode?.toString()} onChange={(v) => handleChange('usbMode', v)} options={[{l:'Сеть (RNDIS)', v:'0'}, {l:'Передача файлов (MTP)', v:'1'}]} />
             </FormGroup>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Device Info</h3>
+            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Информация об устройстве</h3>
             <FormGroup>
-              <InfoRow label="Hardware" value={data.hardwareVersion} />
-              <InfoRow label="Firmware" value={data.systemVersion} />
-              <InfoRow label="MAC Address" value={data.mac} />
+              <InfoRow label="Аппаратная версия" value={data.hardwareVersion} />
+              <InfoRow label="Версия прошивки" value={data.systemVersion} />
+              <InfoRow label="MAC-адрес" value={data.mac} />
               <InfoRow label="ICCID" value={data.iccid} />
               <InfoRow label="IMSI" value={data.imsi} />
-              <InfoRow label="Current IMEI" value={data.imei} />
+              <InfoRow label="Текущий IMEI" value={data.imei} />
             </FormGroup>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Change Admin Password</h3>
+            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Изменить пароль администратора</h3>
             <FormGroup>
-              <InputRow label="Old Password" value={formData.oldPassword || ''} onChange={(v) => handleChange('oldPassword', v)} type="password" />
-              <InputRow label="New Password" value={formData.newPassword || ''} onChange={(v) => handleChange('newPassword', v)} type="password" />
+              <InputRow label="Старый пароль" value={formData.oldPassword || ''} onChange={(v) => handleChange('oldPassword', v)} type="password" />
+              <InputRow label="Новый пароль" value={formData.newPassword || ''} onChange={(v) => handleChange('newPassword', v)} type="password" />
             </FormGroup>
             <button onClick={handleChangePassword} disabled={!formData.oldPassword || !formData.newPassword || isSaving} className="w-full mt-3 bg-zinc-800 hover:bg-zinc-700 text-white py-3 rounded-2xl font-medium transition-colors disabled:opacity-50">
-              Update Password
+              Обновить пароль
             </button>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Change IMEI</h3>
+            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Изменить IMEI</h3>
             <FormGroup>
-              <InputRow label="New IMEI" value={formData.newImei || ''} onChange={(v) => handleChange('newImei', v)} placeholder="15 digits" />
+              <InputRow label="Новый IMEI" value={formData.newImei || ''} onChange={(v) => handleChange('newImei', v)} placeholder="15 цифр" />
             </FormGroup>
 
-            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">System Actions</h3>
+            <h3 className="text-sm font-medium text-zinc-500 ml-4 mt-6 mb-2 uppercase tracking-wider">Системные действия</h3>
             <div className="space-y-3">
               <button onClick={() => onSystemAction('rebootSystem')} className="w-full bg-zinc-900/50 border border-white/5 rounded-2xl p-4 flex items-center justify-center gap-2 text-zinc-200 hover:bg-white/5 transition-colors">
-                <RotateCcw className="w-5 h-5" /> Reboot Device
+                <RotateCcw className="w-5 h-5" /> Перезагрузить устройство
               </button>
               <button onClick={() => onSystemAction('factoryReset')} className="w-full bg-red-500/10 border border-red-500/20 rounded-2xl p-4 flex items-center justify-center gap-2 text-red-400 hover:bg-red-500/20 transition-colors">
-                <Trash2 className="w-5 h-5" /> Factory Reset
+                <Trash2 className="w-5 h-5" /> Сброс до заводских настроек
               </button>
             </div>
           </>
