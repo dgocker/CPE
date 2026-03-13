@@ -423,19 +423,13 @@ export default function App() {
     }
 
     try {
-      // 1. Завершаем сессию перед сканированием, как просил пользователь
-      // Это освобождает ресурсы и позволяет scan.cgi работать монопольно
-      try {
-        await apiCall({ fid: 'logout', fields: {} });
-      } catch (e) {
-        console.warn('Logout failed or already logged out', e);
-      }
-      localStorage.removeItem('sessionId');
-      setSessionId(null);
-
-      // 2. Запускаем scan.cgi
-      // Он сам сделает AT+COPS=2 (выключит интернет) и AT+COPS=?
+      // Запускаем scan.cgi
+      // Он сам сделает kill_smd_users (очистку сессий порта), 
+      // AT+COPS=2 (выключит интернет) и AT+COPS=?
+      const sessionId = localStorage.getItem('sessionId');
       const headers: Record<string, string> = { 'Accept': 'application/json' };
+      if (sessionId) headers['Authorization'] = sessionId;
+      
       const res = await fetch('/cgi-bin/scan.cgi?action=start', { headers });
       
       if (res.ok) {
