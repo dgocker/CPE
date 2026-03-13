@@ -201,6 +201,7 @@ export default function App() {
            ...prev, 
            apnConfigs: Array.isArray(configs) ? configs : [], 
            currentConfig: f.currentConfig ?? f.current_config, 
+           selectId: f.selectId !== undefined ? Number(f.selectId) : prev.selectId,
            apnMode: f.apnMode ?? f.apn_mode 
          }));
       }
@@ -1146,7 +1147,8 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
 
   const handleEditApn = async (apn: any) => {
     try {
-      const res = await apiCall({ fid: 'queryApn', fields: { selectId: apn.id } });
+      // Пробуем запросить детали по ID (используем и id и selectId для совместимости)
+      const res = await apiCall({ fid: 'queryApn', fields: { id: apn.id, selectId: apn.id } });
       const details = res.fields || res;
       setEditingApn({ ...apn, ...details });
     } catch (e) {
@@ -1165,7 +1167,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         apnPassword: editingApn.apnPassword || '',
         apnProxy: editingApn.apnProxy || '',
         apnPort: editingApn.apnPort || '',
-        pdpType: editingApn.pdpType || 'IPv4',
+        pdpType: (editingApn.pdpType || 'IPV4').toUpperCase(),
         authtype: parseInt(editingApn.authtype?.toString() || '0'),
       };
 
@@ -1353,7 +1355,9 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               )}
               {formData.apnConfigs?.map((apn: any) => {
                 // currentConfig может быть как ID, так и именем
-                const isActive = formData.currentConfig == apn.id || formData.currentConfig === apn.name || formData.currentConfig === apn.configName;
+                const isActive = data.selectId !== undefined 
+                  ? (Number(data.selectId) === Number(apn.id)) 
+                  : (formData.currentConfig == apn.id || formData.currentConfig === apn.name || formData.currentConfig === apn.configName);
                 return (
                   <div 
                     key={apn.id} 
@@ -1408,7 +1412,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                               return;
                             }
                             if (window.confirm(`Удалить профиль "${apn.name || apn.configName || 'Без названия'}"?`)) {
-                              onSystemAction('deleteApn', { selectId: apn.id });
+                              onSystemAction('deleteApn', { id: apn.id });
                             }
                           }} 
                           className="p-2 text-red-400/60 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
@@ -1434,7 +1438,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
         {page === 'mobile' && editingApn && (
           <FormGroup>
             <InputRow label="Имя профиля" value={editingApn.name || editingApn.configName} onChange={(v) => setEditingApn({...editingApn, name: v, configName: v})} />
-            <SelectRow label="Тип PDP" value={editingApn.pdpType || 'IPv4'} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPv4'}, {l:'IPv6', v:'IPv6'}, {l:'IPv4v6', v:'IPv4V6'}, {l:'IP', v:'IP'}]} />
+            <SelectRow label="Тип PDP" value={(editingApn.pdpType || 'IPV4').toUpperCase()} onChange={(v) => setEditingApn({...editingApn, pdpType: v})} options={[{l:'IPv4', v:'IPV4'}, {l:'IPv6', v:'IPV6'}, {l:'IPv4v6', v:'IPV4V6'}, {l:'IP', v:'IP'}]} />
             <InputRow label="APN" value={editingApn.apn} onChange={(v) => setEditingApn({...editingApn, apn: v})} />
             <div className="flex divide-x divide-white/5">
               <InputRow label="MCC" value={editingApn.mcc || ''} onChange={(v) => setEditingApn({...editingApn, mcc: v})} placeholder="250" />
