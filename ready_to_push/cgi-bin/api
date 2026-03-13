@@ -53,12 +53,6 @@ fi
 
 # 3. ДЕЙСТВИЕ: AT КОМАНДА
 if [ -n "$AT_CMD" ]; then
-    # Проверяем, не идет ли сейчас сканирование сетей
-    if [ -d "/data/local/tmp/modem_cops.lock" ]; then
-        echo '{"reply":"error","message":"Modem is busy with network scan"}'
-        exit 0
-    fi
-
     kill_smd_users
     > "$LOG_FILE"
     busybox stty -F "$PORT" 115200 raw -echo 2>/dev/null

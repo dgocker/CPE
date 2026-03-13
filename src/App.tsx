@@ -169,6 +169,7 @@ export default function App() {
 
   const fetchData = useCallback(async () => {
     if (!localStorage.getItem('sessionId') && !isDev) return;
+    if (scanStatus === 'scanning') return;
     
     // 1. Fetch Fields
     try {
@@ -320,10 +321,11 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (scanStatus === 'scanning') return;
     fetchData();
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, scanStatus]);
 
   // --- Network Scan Logic ---
   useEffect(() => {
@@ -377,8 +379,8 @@ export default function App() {
   }, [scanStatus]);
 
   const parseOperators = (rawData: string) => {
-    // Очистка от префикса +COPS: если он есть
-    const cleanData = rawData.includes('+COPS:') ? rawData.split('+COPS:')[1] : rawData;
+    // Очистка от всех префиксов +COPS:
+    const cleanData = rawData.replace(/\+COPS:/g, '');
     
     const regex = /\((\d+),"([^"]*)","([^"]*)","([^"]*)"(?:,(\d+))?\)/g;
     const ops = [];
@@ -409,16 +411,38 @@ export default function App() {
     setScanStatus('scanning');
     setOperators([]);
     
+    if (isDev) {
+      // В режиме разработки имитируем работу scan.cgi
+      setData((prev: any) => ({ ...prev, internetState: 'disconnected' }));
+      setTimeout(() => {
+        setScanStatus('done');
+        parseOperators('(+COPS: (2,"MTS","MTS","25001",7),(1,"Beeline","Beeline","25099",7),(3,"MegaFon","MegaFon","25002",7))');
+        showToast('Поиск завершен (MOCK)');
+      }, 5000);
+      return;
+    }
+
     try {
-      // Call logout before scan as requested by user
-      await apiCall({ fid: 'logout', fields: {} });
+      // 1. Завершаем сессию перед сканированием, как просил пользователь
+      // Это освобождает ресурсы и позволяет scan.cgi работать монопольно
+      try {
+        await apiCall({ fid: 'logout', fields: {} });
+      } catch (e) {
+        console.warn('Logout failed or already logged out', e);
+      }
       localStorage.removeItem('sessionId');
+      setSessionId(null);
+
+      // 2. Запускаем scan.cgi
+      // Он сам сделает AT+COPS=2 (выключит интернет) и AT+COPS=?
+      const headers: Record<string, string> = { 'Accept': 'application/json' };
+      const res = await fetch('/cgi-bin/scan.cgi?action=start', { headers });
       
-      const headers: Record<string, string> = {};
-      // No sessionId in headers now
-      
-      await fetch('/cgi-bin/scan.cgi?action=start', { headers });
-      showToast('Поиск запущен');
+      if (res.ok) {
+        showToast('Поиск запущен (интернет будет отключен)');
+      } else {
+        throw new Error('Failed to start scan.cgi');
+      }
     } catch (err) {
       setScanStatus('error');
       showToast('Не удалось запустить поиск', 'error');
