@@ -203,6 +203,14 @@ export default function App() {
       }
     } catch (e) {
       console.warn('queryApn failed', e);
+      if (isDev) {
+        setData((prev: any) => ({ 
+          ...prev, 
+          apnConfigs: MOCK_DATA.apnConfigs, 
+          currentConfig: MOCK_DATA.currentConfig,
+          apnMode: MOCK_DATA.apnMode
+        }));
+      }
     }
 
     // 3. Fetch COPS
@@ -1274,7 +1282,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               <InputRow label="Значение TTL" value={formData.ttl} onChange={(v) => handleChange('ttl', v)} type="number" />
             </FormGroup>
 
-            <div className="mt-8 mb-4 flex items-center justify-between px-4">
+            <div className="mt-4 mb-4 flex items-center justify-between px-4">
               <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-widest">Профили APN</h3>
               <button 
                 onClick={() => setEditingApn({})} 
@@ -1284,19 +1292,7 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
               </button>
             </div>
 
-            <FormGroup>
-              <SelectRow 
-                label="Режим APN" 
-                value={formData.apnMode} 
-                onChange={(v) => {
-                  handleChange('apnMode', v);
-                  onSave('setFields', { apnMode: v });
-                }} 
-                options={[{l:'Автоматический', v:'auto'}, {l:'Ручной', v:'manual'}]} 
-              />
-            </FormGroup>
-
-            <div className="mt-4 space-y-3">
+            <div className="space-y-3">
               {formData.apnConfigs?.map((apn: any) => {
                 const isActive = formData.currentConfig == apn.id;
                 return (
@@ -1312,10 +1308,6 @@ function SettingsSubPage({ page, data, onBack, onSave, onSystemAction, showToast
                       <div className="flex items-center gap-4">
                         <button 
                           onClick={() => {
-                            if (formData.apnMode === 'auto') {
-                              showToast('Переключите режим APN в "Ручной", чтобы выбирать профиль', 'error');
-                              return;
-                            }
                             onSystemAction('setDefaultApn', { selectId: apn.id });
                           }}
                           className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${
